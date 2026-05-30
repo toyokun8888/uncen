@@ -1,0 +1,65 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+build/
+coverage/
+.vite/
+
+# Runtime logs
+logs/
+!collection-ledger/storage/logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# collection-ledger runtime storage
+collection-ledger/storage/logs/*
+collection-ledger/storage/exports/*
+collection-ledger/storage/thumbnails/*
+!collection-ledger/storage/logs/.gitkeep
+!collection-ledger/storage/exports/.gitkeep
+!collection-ledger/storage/thumbnails/.gitkeep
+
+# Local generated assets and large media
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.wmv
+*.torrent
+*.part
+*.crdownload
+
+# Local CSV/JSON exports that may contain private paths or scraped data
+*_output/
+*output/
+*.csv
+*.tsv
+*.jsonl
+
+# Keep package manifests and project config JSON tracked
+!package.json
+!package-lock.json
+!collection-ledger/**/package.json
+!collection-ledger/**/package-lock.json
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# PM2/local process files
+.pm2/
+*.pid
