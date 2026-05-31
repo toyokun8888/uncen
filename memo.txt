@@ -1,92 +1,32 @@
-これからは実際にDBの設計にはいるいため、マスターを参照するHPを提供します
-今回提供するHPは、マスターを作成するために火tうような要素を取り出します
-まずおおもとのHPです
+NASの中にある”paco”と名前が付いたファイルを1か所に集めます
 
-https://www.caribbeancom.com/listpages/paco/all1.htm
+ルールと概要
 
-この中のallの後の数字でページ切り替えます。一覧ページで、1ページあたり約３０の要素がとれます。
-現在、ページは１１２ページあるので、合計約３３６０ほどのマスターレコードになります。
+NASは複数あり
+それぞれ、D,E,F,G,H,I,J,K,L,N,P
+と１１か所ある
+ストレージ間の移動禁止
 
-この中のエレメントを書き出しますので、対象をの場所を確認するとともに、実際にサイトを開いて確認してください
+検索対象
+あいまい検索で”paco”とつくものすべて。拡張子など縛りはいらない
+この時点で、在庫の確認CSVはとらない、業務の責務をしっかり分ける
+移動だけ
 
-<div class="entry" itemscope="" itemtype="http://schema.org/VideoObject">
-					<div class="entry-media">
-							<div class="tag-channel is-pcm">パコパコママ</div>
-                        			 
-																		<div class="media-thum">
-				<a href="/moviepages/053026_100/index.html">
-					<img class="media-image" itemprop="thumbnail" src="https://www.pacopacomama.com/assets/sample//053026_100/l_hd.jpg" alt="スッピン熟女 ~ 弘中さんの素顔 ~ 弘中れおな" title="スッピン熟女 ~ 弘中さんの素顔 ~">
-				</a>
-			</div>
-		</div><!-- /.entry-media -->
-		<div class="entry-meta">
-													
-							<div class="meta-data">2026-05-30</div>
-			
-			<div class="meta-title">
-									<a itemprop="url" href="/moviepages/053026_100/index.html">スッピン熟女 ~ 弘中さんの素顔 ~</a>
-							</div>
+それぞれの直下に
+N:\uncen\paco
+このようなディレクトリを作成して、pacoディレクトリにファイル移動させる
+このストレージ名のN:\のとこは各ストレージごとに作るので、理解してね？KだとK:\のはいかに作るって意味
 
-			<div class="meta-data">
-																										<a itemprop="actor" itemscope="" itemtype="http://schema.org/Person" href="/search/%B9%B0%C3%E6%A4%EC%A4%AA%A4%CA/1.html"><span itemprop="name">弘中れおな</span></a>
-																		</div>
+このディレクトリ作成を各ストレージに行うのと、各ストレージごとに"paco"を含むファイルを作成したディレクトリに移動させるJS作って、レビューして実装完走して
+D: 4
+E: 4
+F: 36
+G: 5
+H: 119
+I: 9
+J: 99
+K: 63
+L: 21
+N: 11
+P: 0
 
-		</div><!-- /.entry-meta -->
-	</div>
-
-    このように1つの要素が構成され、これが1ページあたり30あると思って下さい
-
-    
-
-    <div class="entry-meta">
-													
-							<div class="meta-data">2026-05-30</div>
-			
-			<div class="meta-title">
-									<a itemprop="url" href="/moviepages/053026_100/index.html">スッピン熟女 ~ 弘中さんの素顔 ~</a>
-							</div>
-
-			<div class="meta-data">
-																										<a itemprop="actor" itemscope="" itemtype="http://schema.org/Person" href="/search/%B9%B0%C3%E6%A4%EC%A4%AA%A4%CA/1.html"><span itemprop="name">弘中れおな</span></a>
-																		</div>
-
-		</div>
-
-        ここに、日付、タイトル、出演者名があります
-
-        今回、1意の値の候補して、日付があります。
-        これは1日に1作品以上はありません。最低1日につき1作品まで（作品発表ない日ももちろんあります）という特性から、<div class="meta-data">2026-05-30</div>ここの要素を1意としてPKにしたいのですが、ここで十ファイルとの振れの問題があります
-
-        実ファイルのサンプルです
-
-        better_pacopacomama-052717_094.mp4
-        pacopacomama-040325_100-.mp4
-        pacopacomama-091325_100-nyap2p.com.mp4
-        112124_100-paco-1080p.mp4
-        091121_530-paco.mp4
-
-        ざっくりと5パターンあらいだしましたが、もう少しありそうです
-
-        ここで見てほしいのは、日付
-        better_pacopacomama-052717_094.mp4
-        このファイルだと、052717を切り取ります
-        これは2017-05-27と取れます
-        この日付のデータを、そろえないと実データとリレーションできません
-
-        なので、1位の値の入れ方は、
-        052717の形を正にします
-        つまり実データよりです
-        ただしDBには両方用意してください
-        ブラウザで人が見やすいからです
-
-    なので、さっきのサンプルだと、
-    <a itemprop="url" href="/moviepages/053026_100/index.htmlこの部分に、053026変換した先があるので、
-    ここも分けてカラムを持ち、1意の値にするということです。
-    つまり
-    <div class="meta-data">2026-05-30</div>
-    は、
-    053026
-    です。
-
-    ここまでの理解OKですか？
-ファイルの振れはここでは考える必要はありません。今はマスターテーブルの話をしてますので、この1位の値の取り方、リレーションがかのうかだけ確認ください。
