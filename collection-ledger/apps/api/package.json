@@ -5,7 +5,7 @@
   "type": "commonjs",
   "main": "src/server.js",
   "scripts": {
+    "check": "node --check src/server.js",
     "start": "node src/server.js"
   }
 }
-

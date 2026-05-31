@@ -12,6 +12,7 @@ dist/
 build/
 coverage/
 .vite/
+*.tsbuildinfo
 
 # Runtime logs
 logs/
