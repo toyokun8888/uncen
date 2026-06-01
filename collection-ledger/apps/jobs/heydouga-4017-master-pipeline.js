@@ -26,6 +26,7 @@ function parseArgs(argv) {
     limit: 0,
     apply: false,
     envFile: "",
+    reviewCsv: "",
     writeJson: true,
     writeCsv: true,
   };
@@ -43,6 +44,10 @@ function parseArgs(argv) {
       args.envFile = arg.slice("--env-file=".length);
     } else if (arg === "--env-file") {
       args.envFile = argv[++i];
+    } else if (arg.startsWith("--review-csv=")) {
+      args.reviewCsv = arg.slice("--review-csv=".length);
+    } else if (arg === "--review-csv") {
+      args.reviewCsv = argv[++i];
     } else if (arg.startsWith("--step=")) {
       args.step = arg.slice("--step=".length);
     } else if (arg === "--step") {
@@ -482,6 +487,16 @@ function writeCsv(outputPath, rows) {
   fs.writeFileSync(outputPath, `${lines.join("\r\n")}\r\n`, "utf8");
 }
 
+function writeCsvRows(outputPath, columns, rows) {
+  const lines = [columns.join(",")];
+
+  for (const row of rows) {
+    lines.push(columns.map((column) => escapeCsv(row[column])).join(","));
+  }
+
+  fs.writeFileSync(outputPath, `${lines.join("\r\n")}\r\n`, "utf8");
+}
+
 function escapeCsv(value) {
   const raw = escapeSpreadsheetFormula(String(value ?? ""));
   if (/[",\r\n]/.test(raw)) {
@@ -764,6 +779,572 @@ async function getDbStatus() {
   }
 }
 
+async function exportStagingReview(args) {
+  const runId = buildRunId().replace("_master_collect_", "_staging_review_");
+  const outputDir = path.resolve(__dirname, "..", "..", "storage", "exports", SOURCE_NAME);
+  const client = createPgClient();
+
+  fs.mkdirSync(outputDir, { recursive: true });
+  await client.connect();
+
+  try {
+    const summary = await getStagingReviewSummary(client);
+    const allRows = await getStagingReviewRows(client, args.limit);
+    const duplicateRows = await getDuplicateStagingRows(client);
+    const needsReviewRows = await getNeedsReviewRows(client);
+
+    const allColumns = [
+      "staging_id",
+      "raw_id",
+      "review_status",
+      "candidate_unique_key",
+      "candidate_base_no",
+      "candidate_branch_no",
+      "confirmed_unique_key",
+      "confirmed_base_no",
+      "confirmed_branch_no",
+      "source_site",
+      "source_priority",
+      "note",
+      "title",
+      "detail_url",
+      "thumbnail_url",
+      "last_run_id",
+      "updated_at",
+    ];
+    const duplicateColumns = ["duplicate_key", "duplicate_count", ...allColumns];
+    const paths = {
+      all: path.join(outputDir, `${runId}_all.csv`),
+      duplicates: path.join(outputDir, `${runId}_duplicates.csv`),
+      needsReview: path.join(outputDir, `${runId}_needs_review.csv`),
+      summary: path.join(outputDir, `${runId}_summary.json`),
+    };
+
+    writeCsvRows(paths.all, allColumns, allRows);
+    writeCsvRows(paths.duplicates, duplicateColumns, duplicateRows);
+    writeCsvRows(paths.needsReview, allColumns, needsReviewRows);
+    fs.writeFileSync(paths.summary, JSON.stringify({ ok: true, source_name: SOURCE_NAME, summary }, null, 2), "utf8");
+
+    return { runId, summary, outputPaths: paths };
+  } finally {
+    await client.end();
+  }
+}
+
+async function getStagingReviewSummary(client) {
+  const result = await client.query(
+    `
+      with keyed as (
+        select candidate_unique_key
+        from cl.heydouga_4017_m002_master_staging
+        where candidate_unique_key is not null
+      ),
+      duplicated as (
+        select candidate_unique_key, count(*)::integer as duplicate_count
+        from keyed
+        group by candidate_unique_key
+        having count(*) > 1
+      )
+      select
+        (select count(*)::integer from cl.heydouga_4017_m002_master_staging) as total_count,
+        (select count(*)::integer from cl.heydouga_4017_m002_master_staging where review_status = 'pending') as pending_count,
+        (select count(*)::integer from cl.heydouga_4017_m002_master_staging where review_status = 'needs_review') as needs_review_count,
+        (select count(*)::integer from cl.heydouga_4017_m002_master_staging where review_status = 'approved') as approved_count,
+        (select count(*)::integer from cl.heydouga_4017_m002_master_staging where review_status = 'rejected') as rejected_count,
+        (select count(*)::integer from cl.heydouga_4017_m002_master_staging where candidate_unique_key is null) as no_candidate_key_count,
+        (select count(distinct candidate_unique_key)::integer from keyed) as distinct_candidate_key_count,
+        (select count(*)::integer from duplicated) as duplicate_key_count,
+        (select coalesce(sum(duplicate_count), 0)::integer from duplicated) as duplicate_row_count
+    `
+  );
+
+  return result.rows[0];
+}
+
+async function getStagingReviewRows(client, limit) {
+  const limitClause = limit > 0 ? "limit $1" : "";
+  const params = limit > 0 ? [limit] : [];
+  const result = await client.query(
+    `
+      select
+        staging_id,
+        raw_id,
+        review_status,
+        coalesce(candidate_unique_key, '') as candidate_unique_key,
+        coalesce(candidate_base_no, '') as candidate_base_no,
+        coalesce(candidate_branch_no, '') as candidate_branch_no,
+        coalesce(confirmed_unique_key, '') as confirmed_unique_key,
+        coalesce(confirmed_base_no, '') as confirmed_base_no,
+        coalesce(confirmed_branch_no, '') as confirmed_branch_no,
+        source_site,
+        source_priority,
+        coalesce(note, '') as note,
+        coalesce(title, '') as title,
+        coalesce(detail_url, '') as detail_url,
+        coalesce(thumbnail_url, '') as thumbnail_url,
+        last_run_id,
+        updated_at::text as updated_at
+      from cl.heydouga_4017_m002_master_staging
+      order by
+        coalesce(candidate_base_no, ''),
+        coalesce(candidate_branch_no, ''),
+        source_priority,
+        staging_id
+      ${limitClause}
+    `,
+    params
+  );
+
+  return result.rows;
+}
+
+async function getDuplicateStagingRows(client) {
+  const result = await client.query(
+    `
+      with duplicated as (
+        select candidate_unique_key, count(*)::integer as duplicate_count
+        from cl.heydouga_4017_m002_master_staging
+        where candidate_unique_key is not null
+        group by candidate_unique_key
+        having count(*) > 1
+      )
+      select
+        d.candidate_unique_key as duplicate_key,
+        d.duplicate_count,
+        s.staging_id,
+        s.raw_id,
+        s.review_status,
+        coalesce(s.candidate_unique_key, '') as candidate_unique_key,
+        coalesce(s.candidate_base_no, '') as candidate_base_no,
+        coalesce(s.candidate_branch_no, '') as candidate_branch_no,
+        coalesce(s.confirmed_unique_key, '') as confirmed_unique_key,
+        coalesce(s.confirmed_base_no, '') as confirmed_base_no,
+        coalesce(s.confirmed_branch_no, '') as confirmed_branch_no,
+        s.source_site,
+        s.source_priority,
+        coalesce(s.note, '') as note,
+        coalesce(s.title, '') as title,
+        coalesce(s.detail_url, '') as detail_url,
+        coalesce(s.thumbnail_url, '') as thumbnail_url,
+        s.last_run_id,
+        s.updated_at::text as updated_at
+      from duplicated d
+      join cl.heydouga_4017_m002_master_staging s
+        on s.candidate_unique_key = d.candidate_unique_key
+      order by d.candidate_unique_key, s.source_priority, s.staging_id
+    `
+  );
+
+  return result.rows;
+}
+
+async function getNeedsReviewRows(client) {
+  const result = await client.query(
+    `
+      select
+        staging_id,
+        raw_id,
+        review_status,
+        coalesce(candidate_unique_key, '') as candidate_unique_key,
+        coalesce(candidate_base_no, '') as candidate_base_no,
+        coalesce(candidate_branch_no, '') as candidate_branch_no,
+        coalesce(confirmed_unique_key, '') as confirmed_unique_key,
+        coalesce(confirmed_base_no, '') as confirmed_base_no,
+        coalesce(confirmed_branch_no, '') as confirmed_branch_no,
+        source_site,
+        source_priority,
+        coalesce(note, '') as note,
+        coalesce(title, '') as title,
+        coalesce(detail_url, '') as detail_url,
+        coalesce(thumbnail_url, '') as thumbnail_url,
+        last_run_id,
+        updated_at::text as updated_at
+      from cl.heydouga_4017_m002_master_staging
+      where review_status = 'needs_review'
+         or candidate_unique_key is null
+      order by
+        coalesce(candidate_base_no, ''),
+        coalesce(candidate_branch_no, ''),
+        source_priority,
+        staging_id
+    `
+  );
+
+  return result.rows;
+}
+
+async function promoteMaster(args) {
+  const client = createPgClient();
+
+  await client.connect();
+  try {
+    const summary = await getMasterPromotionSummary(client);
+    if (!args.apply) {
+      return { applied: false, summary, rowsInserted: 0 };
+    }
+
+    const result = await client.query(
+      `
+        with approved as (
+          select
+            s.staging_id,
+            coalesce(s.confirmed_unique_key, s.candidate_unique_key) as unique_key,
+            coalesce(s.confirmed_base_no, s.candidate_base_no) as base_no,
+            coalesce(s.confirmed_branch_no, s.candidate_branch_no) as branch_no,
+            s.title,
+            s.detail_url,
+            s.thumbnail_url,
+            s.source_site,
+            s.source_priority
+          from cl.heydouga_4017_m002_master_staging s
+          where s.review_status = 'approved'
+            and coalesce(s.confirmed_unique_key, s.candidate_unique_key) is not null
+            and coalesce(s.confirmed_base_no, s.candidate_base_no) is not null
+            and coalesce(s.confirmed_branch_no, s.candidate_branch_no) is not null
+            and s.title is not null
+        ),
+        duplicate_keys as (
+          select unique_key
+          from approved
+          group by unique_key
+          having count(*) > 1
+        ),
+        selected as (
+          select distinct on (a.unique_key)
+            a.unique_key,
+            a.base_no,
+            a.branch_no,
+            a.title,
+            a.detail_url,
+            a.thumbnail_url,
+            a.source_site,
+            a.staging_id
+          from approved a
+          where not exists (
+            select 1
+            from duplicate_keys d
+            where d.unique_key = a.unique_key
+          )
+          and not exists (
+            select 1
+            from cl.heydouga_4017_m002_master m
+            where m.unique_key = a.unique_key
+          )
+          order by a.unique_key, a.source_priority, a.staging_id
+        )
+        insert into cl.heydouga_4017_m002_master (
+          unique_key,
+          base_no,
+          branch_no,
+          title,
+          detail_url,
+          thumbnail_url,
+          primary_source_site,
+          primary_staging_id,
+          review_status
+        )
+        select
+          unique_key,
+          base_no,
+          branch_no,
+          title,
+          detail_url,
+          thumbnail_url,
+          source_site,
+          staging_id,
+          'approved'
+        from selected
+        on conflict (unique_key) do nothing
+        returning unique_key
+      `
+    );
+
+    return { applied: true, summary, rowsInserted: result.rowCount };
+  } finally {
+    await client.end();
+  }
+}
+
+async function getMasterPromotionSummary(client) {
+  const result = await client.query(
+    `
+      with approved as (
+        select
+          coalesce(confirmed_unique_key, candidate_unique_key) as unique_key,
+          coalesce(confirmed_base_no, candidate_base_no) as base_no,
+          coalesce(confirmed_branch_no, candidate_branch_no) as branch_no,
+          title
+        from cl.heydouga_4017_m002_master_staging
+        where review_status = 'approved'
+      ),
+      eligible as (
+        select *
+        from approved
+        where unique_key is not null
+          and base_no is not null
+          and branch_no is not null
+          and title is not null
+      ),
+      duplicate_keys as (
+        select unique_key, count(*)::integer as duplicate_count
+        from eligible
+        group by unique_key
+        having count(*) > 1
+      )
+      select
+        (select count(*)::integer from approved) as approved_count,
+        (select count(*)::integer from eligible) as eligible_count,
+        (select count(*)::integer from duplicate_keys) as duplicate_approved_key_count,
+        (
+          select count(*)::integer
+          from eligible e
+          where exists (
+            select 1
+            from cl.heydouga_4017_m002_master m
+            where m.unique_key = e.unique_key
+          )
+        ) as already_master_count,
+        (
+          select count(*)::integer
+          from eligible e
+          where not exists (
+            select 1
+            from duplicate_keys d
+            where d.unique_key = e.unique_key
+          )
+          and not exists (
+            select 1
+            from cl.heydouga_4017_m002_master m
+            where m.unique_key = e.unique_key
+          )
+        ) as insertable_count
+    `
+  );
+
+  return result.rows[0];
+}
+
+async function importStagingReview(args) {
+  if (!args.reviewCsv) {
+    throw new Error("staging-review-import requires --review-csv");
+  }
+
+  const rows = readCsvRows(path.resolve(args.reviewCsv));
+  const prepared = prepareReviewImportRows(rows);
+  const summary = summarizeReviewImport(prepared);
+
+  if (!args.apply) {
+    return { applied: false, summary };
+  }
+  if (prepared.invalidRows.length > 0) {
+    throw new Error("staging-review-import has invalid rows; fix the CSV before --apply");
+  }
+
+  const client = createPgClient();
+  let rowsUpdated = 0;
+
+  await client.connect();
+  try {
+    await client.query("begin");
+    for (const row of prepared.validRows) {
+      const result = await client.query(
+        `
+          update cl.heydouga_4017_m002_master_staging
+          set review_status = $2,
+              confirmed_unique_key = coalesce(nullif($3, ''), confirmed_unique_key),
+              confirmed_base_no = coalesce(nullif($4, ''), confirmed_base_no),
+              confirmed_branch_no = coalesce(nullif($5, ''), confirmed_branch_no),
+              note = coalesce(nullif($6, ''), note),
+              updated_at = now()
+          where staging_id = $1
+            and raw_id = $7
+            and updated_at = $8::timestamptz
+          returning staging_id
+        `,
+        [
+          row.stagingId,
+          row.reviewStatus,
+          row.confirmedUniqueKey,
+          row.confirmedBaseNo,
+          row.confirmedBranchNo,
+          row.note,
+          row.rawId,
+          row.updatedAt,
+        ]
+      );
+      if (result.rowCount !== 1) {
+        throw new Error(`staging row did not match staging_id/raw_id: ${row.stagingId}/${row.rawId}`);
+      }
+      rowsUpdated += result.rowCount;
+    }
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    await client.end();
+  }
+
+  return { applied: true, summary, rowsUpdated };
+}
+
+function readCsvRows(csvPath) {
+  const text = fs.readFileSync(csvPath, "utf8").replace(/^\uFEFF/, "");
+  const records = parseCsvRecords(text);
+  if (records.length < 1) return [];
+
+  const headers = records[0].map((header) => header.trim());
+  const rows = records.slice(1).filter((record) => record.some((value) => value !== "")).map((record) => {
+    const row = {};
+    headers.forEach((header, index) => {
+      row[header] = record[index] || "";
+    });
+    return row;
+  });
+  rows.headers = headers;
+  return rows;
+}
+
+function parseCsvRecords(text) {
+  const records = [];
+  let record = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    const next = text[i + 1];
+
+    if (inQuotes) {
+      if (char === '"' && next === '"') {
+        field += '"';
+        i += 1;
+      } else if (char === '"') {
+        inQuotes = false;
+      } else {
+        field += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = true;
+    } else if (char === ",") {
+      record.push(field);
+      field = "";
+    } else if (char === "\r") {
+      if (next === "\n") i += 1;
+      record.push(field);
+      records.push(record);
+      record = [];
+      field = "";
+    } else if (char === "\n") {
+      record.push(field);
+      records.push(record);
+      record = [];
+      field = "";
+    } else {
+      field += char;
+    }
+  }
+
+  if (field !== "" || record.length > 0) {
+    record.push(field);
+    records.push(record);
+  }
+
+  return records;
+}
+
+function prepareReviewImportRows(rows) {
+  const validStatuses = new Set(["pending", "approved", "rejected", "needs_review"]);
+  const headers = new Set(rows.headers || []);
+  const requiredHeaders = ["staging_id", "raw_id", "review_status", "updated_at"];
+  const validRows = [];
+  const invalidRows = [];
+
+  const missingHeaders = requiredHeaders.filter((header) => !headers.has(header));
+  if (missingHeaders.length > 0) {
+    return {
+      validRows,
+      invalidRows: [{ rowNumber: 1, errors: `missing_headers:${missingHeaders.join("|")}` }],
+      rowsRead: rows.length,
+    };
+  }
+
+  rows.forEach((row, index) => {
+    const stagingId = Number(row.staging_id || row.stagingId);
+    const rawId = Number(row.raw_id || row.rawId);
+    const reviewStatus = String(row.review_status || "").trim();
+    const updatedAt = String(row.updated_at || "").trim();
+    const candidateUniqueKey = String(row.candidate_unique_key || "").trim();
+    const candidateBaseNo = String(row.candidate_base_no || "").trim();
+    const candidateBranchNo = String(row.candidate_branch_no || "").trim();
+    const confirmedUniqueKey = String(row.confirmed_unique_key || "").trim();
+    const confirmedBaseNo = String(row.confirmed_base_no || "").trim();
+    const confirmedBranchNo = String(row.confirmed_branch_no || "").trim();
+    const effectiveUniqueKey = confirmedUniqueKey || candidateUniqueKey;
+    const effectiveBaseNo = confirmedBaseNo || candidateBaseNo;
+    const effectiveBranchNo = confirmedBranchNo || candidateBranchNo;
+    const errors = [];
+
+    if (!Number.isInteger(stagingId) || stagingId < 1) {
+      errors.push("invalid_staging_id");
+    }
+    if (!Number.isInteger(rawId) || rawId < 1) {
+      errors.push("invalid_raw_id");
+    }
+    if (!validStatuses.has(reviewStatus)) {
+      errors.push("invalid_review_status");
+    }
+    if (!updatedAt) {
+      errors.push("missing_updated_at");
+    }
+    if (reviewStatus === "approved") {
+      if (!effectiveUniqueKey || !effectiveBaseNo || !effectiveBranchNo) {
+        errors.push("approved_key_incomplete");
+      } else if (effectiveUniqueKey !== `${effectiveBaseNo}-${effectiveBranchNo}`) {
+        errors.push("approved_key_mismatch");
+      } else if (!/^[0-9]{1,5}-[0-9A-Za-z]+$/.test(effectiveUniqueKey)) {
+        errors.push("approved_key_format");
+      }
+    }
+
+    if (errors.length > 0) {
+      invalidRows.push({ rowNumber: index + 2, errors: errors.join(";") });
+      return;
+    }
+
+    validRows.push({
+      stagingId,
+      rawId,
+      reviewStatus,
+      updatedAt,
+      confirmedUniqueKey,
+      confirmedBaseNo,
+      confirmedBranchNo,
+      note: String(row.note || "").trim(),
+    });
+  });
+
+  return { validRows, invalidRows, rowsRead: rows.length };
+}
+
+function summarizeReviewImport(prepared) {
+  const byStatus = {};
+  for (const row of prepared.validRows) {
+    byStatus[row.reviewStatus] = (byStatus[row.reviewStatus] || 0) + 1;
+  }
+
+  return {
+    rows_read: prepared.rowsRead,
+    valid_rows: prepared.validRows.length,
+    invalid_rows: prepared.invalidRows.length,
+    by_review_status: byStatus,
+    invalid_samples: prepared.invalidRows.slice(0, 20),
+  };
+}
+
 function createPgClient() {
   const { Client } = require("pg");
   const database = process.env.PGDATABASE || process.env.DB_NAME;
@@ -816,6 +1397,83 @@ async function main() {
           step: args.step,
           env_file_loaded: Boolean(loadedEnv),
           status,
+        },
+        null,
+        2
+      )}\n`
+    );
+    return;
+  }
+
+  if (args.step === "staging-review-export") {
+    const result = await exportStagingReview(args);
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ok: true,
+          source_name: SOURCE_NAME,
+          step: args.step,
+          env_file_loaded: Boolean(loadedEnv),
+          run_id: result.runId,
+          summary: result.summary,
+          output_paths: result.outputPaths,
+        },
+        null,
+        2
+      )}\n`
+    );
+    return;
+  }
+
+  if (args.step === "master-promote") {
+    const result = await promoteMaster(args);
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ok: true,
+          source_name: SOURCE_NAME,
+          step: args.step,
+          dry_run: !args.apply,
+          env_file_loaded: Boolean(loadedEnv),
+          promotion: result,
+        },
+        null,
+        2
+      )}\n`
+    );
+    return;
+  }
+
+  if (args.step === "staging-review-import") {
+    if (!args.apply) {
+      const result = await importStagingReview(args);
+      process.stdout.write(
+        `${JSON.stringify(
+          {
+            ok: true,
+            source_name: SOURCE_NAME,
+            step: args.step,
+            dry_run: true,
+            env_file_loaded: Boolean(loadedEnv),
+            import: result,
+          },
+          null,
+          2
+        )}\n`
+      );
+      return;
+    }
+
+    const result = await importStagingReview(args);
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ok: true,
+          source_name: SOURCE_NAME,
+          step: args.step,
+          dry_run: false,
+          env_file_loaded: Boolean(loadedEnv),
+          import: result,
         },
         null,
         2
