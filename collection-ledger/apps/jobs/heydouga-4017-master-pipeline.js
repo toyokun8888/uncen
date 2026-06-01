@@ -27,6 +27,7 @@ function parseArgs(argv) {
     apply: false,
     envFile: "",
     reviewCsv: "",
+    includePending: false,
     writeJson: true,
     writeCsv: true,
   };
@@ -40,6 +41,8 @@ function parseArgs(argv) {
       args.writeCsv = false;
     } else if (arg === "--apply") {
       args.apply = true;
+    } else if (arg === "--include-pending") {
+      args.includePending = true;
     } else if (arg.startsWith("--env-file=")) {
       args.envFile = arg.slice("--env-file=".length);
     } else if (arg === "--env-file") {
@@ -279,7 +282,7 @@ function extractHeydouga4017Key(value) {
     return {
       baseNo,
       status: "needs_review",
-      note: "branch_no_not_found",
+      note: "group_title_candidate",
     };
   }
 
@@ -1123,17 +1126,18 @@ async function getNeedsReviewRows(client) {
 
 async function promoteMaster(args) {
   const client = createPgClient();
+  const statuses = args.includePending ? ["approved", "pending"] : ["approved"];
 
   await client.connect();
   try {
-    const summary = await getMasterPromotionSummary(client);
+    const summary = await getMasterPromotionSummary(client, statuses);
     if (!args.apply) {
       return { applied: false, summary, rowsInserted: 0 };
     }
 
     const result = await client.query(
       `
-        with approved as (
+        with candidates as (
           select
             s.staging_id,
             coalesce(s.confirmed_unique_key, s.candidate_unique_key) as unique_key,
@@ -1145,40 +1149,29 @@ async function promoteMaster(args) {
             s.source_site,
             s.source_priority
           from cl.heydouga_4017_m002_master_staging s
-          where s.review_status = 'approved'
+          where s.review_status = any($1::text[])
             and coalesce(s.confirmed_unique_key, s.candidate_unique_key) is not null
             and coalesce(s.confirmed_base_no, s.candidate_base_no) is not null
             and coalesce(s.confirmed_branch_no, s.candidate_branch_no) is not null
             and s.title is not null
         ),
-        duplicate_keys as (
-          select unique_key
-          from approved
-          group by unique_key
-          having count(*) > 1
-        ),
         selected as (
-          select distinct on (a.unique_key)
-            a.unique_key,
-            a.base_no,
-            a.branch_no,
-            a.title,
-            a.detail_url,
-            a.thumbnail_url,
-            a.source_site,
-            a.staging_id
-          from approved a
+          select distinct on (c.unique_key)
+            c.unique_key,
+            c.base_no,
+            c.branch_no,
+            c.title,
+            c.detail_url,
+            c.thumbnail_url,
+            c.source_site,
+            c.staging_id
+          from candidates c
           where not exists (
             select 1
-            from duplicate_keys d
-            where d.unique_key = a.unique_key
-          )
-          and not exists (
-            select 1
             from cl.heydouga_4017_m002_master m
-            where m.unique_key = a.unique_key
+            where m.unique_key = c.unique_key
           )
-          order by a.unique_key, a.source_priority, a.staging_id
+          order by c.unique_key, c.source_priority, c.staging_id
         )
         insert into cl.heydouga_4017_m002_master (
           unique_key,
@@ -1204,30 +1197,31 @@ async function promoteMaster(args) {
         from selected
         on conflict (unique_key) do nothing
         returning unique_key
-      `
+      `,
+      [statuses]
     );
 
-    return { applied: true, summary, rowsInserted: result.rowCount };
+    return { applied: true, includedStatuses: statuses, summary, rowsInserted: result.rowCount };
   } finally {
     await client.end();
   }
 }
 
-async function getMasterPromotionSummary(client) {
+async function getMasterPromotionSummary(client, statuses = ["approved"]) {
   const result = await client.query(
     `
-      with approved as (
+      with candidates as (
         select
           coalesce(confirmed_unique_key, candidate_unique_key) as unique_key,
           coalesce(confirmed_base_no, candidate_base_no) as base_no,
           coalesce(confirmed_branch_no, candidate_branch_no) as branch_no,
           title
         from cl.heydouga_4017_m002_master_staging
-        where review_status = 'approved'
+        where review_status = any($1::text[])
       ),
       eligible as (
         select *
-        from approved
+        from candidates
         where unique_key is not null
           and base_no is not null
           and branch_no is not null
@@ -1240,9 +1234,10 @@ async function getMasterPromotionSummary(client) {
         having count(*) > 1
       )
       select
-        (select count(*)::integer from approved) as approved_count,
+        (select count(*)::integer from candidates) as candidate_count,
         (select count(*)::integer from eligible) as eligible_count,
         (select count(*)::integer from duplicate_keys) as duplicate_approved_key_count,
+        (select count(distinct unique_key)::integer from eligible) as distinct_eligible_key_count,
         (
           select count(*)::integer
           from eligible e
@@ -1253,23 +1248,19 @@ async function getMasterPromotionSummary(client) {
           )
         ) as already_master_count,
         (
-          select count(*)::integer
+          select count(distinct e.unique_key)::integer
           from eligible e
           where not exists (
-            select 1
-            from duplicate_keys d
-            where d.unique_key = e.unique_key
-          )
-          and not exists (
             select 1
             from cl.heydouga_4017_m002_master m
             where m.unique_key = e.unique_key
           )
         ) as insertable_count
-    `
+    `,
+    [statuses]
   );
 
-  return result.rows[0];
+  return { included_statuses: statuses, ...result.rows[0] };
 }
 
 async function importStagingReview(args) {
