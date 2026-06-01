@@ -303,3 +303,129 @@ PACO以外に広げる場合は、`source`、`search_keyword`、ページ数、�
 - RGリンクなし、未登録、混入の扱いが決まっている。
 
 ここまで揃って初めて、バックエンドAPI、フロントエンドUI、UX設計へ進む。
+
+## 15. 小規模サイトの手動バッチ運用
+
+FC2既存プロジェクトより更新数、所持数が小さいサイトでは、PM2の定期自動実行ではなく、人が必要な時にバッチをダブルクリックして実行する運用を基本にする。
+
+この構造はPACO以外でも使う。サイト追加時は、先頭にサイト用の変数名を決める。
+
+例:
+
+```text
+site_key = hogehogehoge
+```
+
+この `site_key` から、以下の3ディレクトリを作る。
+
+```text
+P:\uncen\hogehogehoge_new_master
+P:\uncen\hogehogehoge_new_mp4
+P:\uncen\hogehogehoge_trash
+```
+
+PACOでは以下を使う。
+
+```text
+P:\uncen\paco_new_master
+P:\uncen\paco_new_mp4
+P:\uncen\paco_trash
+```
+
+### 15.1 新規マスター追加バッチ
+
+目的:
+
+- 最新ページを少量確認し、既存マスターとの差分だけ登録する。
+- 登録時にサムネイルも取得する。
+- 小規模更新を人が任意タイミングで実行できるようにする。
+
+PACOの対象ページ:
+
+```text
+https://www.caribbeancom.com/listpages/paco/all1.htm
+```
+
+配置場所:
+
+```text
+P:\uncen\paco_new_master
+```
+
+運用ルール:
+
+- 1ページを読み、既存マスターとの差分を登録する。
+- サムネイルも同時に取得する。
+- サムネイル取得は連続アクセスにせず、数秒の間隔を空ける。
+- バッチファイルをダブルクリックして実行できるようにする。
+
+### 15.2 所持判定・登録バッチ
+
+目的:
+
+- 指定フォルダ配下の新規ファイルを人がまとめて投入する。
+- マスター照合、リネーム、移動、所持DB登録までを手動バッチで行う。
+- ブラウザ表示の所持状態まで更新できる状態にする。
+
+PACOの投入フォルダ:
+
+```text
+P:\uncen\paco_new_mp4
+```
+
+対象:
+
+- `P:\uncen\paco_new_mp4` 配下の全階層。
+- 配下が深くてもすべて巡回する。
+- このフォルダにはPACOだけを入れる前提。
+
+正規所持として照合できた動画:
+
+```text
+P:\uncen\paco
+```
+
+へ移動する。
+
+照合できないもの、不要なもの:
+
+```text
+P:\uncen\paco_trash
+```
+
+へ移動する。
+
+運用ルール:
+
+- 正規所持と判定できたPACO動画だけ、マスターに合わせてリネームする。
+- 正規所持と判定できたPACO動画だけ、所持DBへ登録する。
+- `trash` 行きのファイルはリネームしない。
+- `trash` 行きのファイルは仕分けしない。
+- `trash` 行きのファイルは元ファイル名、元拡張子のまま、すべて同じ階層へ移動する。
+- 投入フォルダ内の階層フォルダは保持しない。ファイルだけを判定対象にする。
+- マスターにない動画ファイルがあった場合はCSVに記録し、そのCSVを `trash` 側へ出力する。
+- CSVは人が後で確認するためのもの。自動でマスター追加しない。
+
+### 15.3 今後のサイト追加時の変数化
+
+今後のサイト追加では、以下を変数として扱う。
+
+```text
+site_key
+new_master_dir = P:\uncen\{site_key}_new_master
+new_mp4_dir    = P:\uncen\{site_key}_new_mp4
+trash_dir      = P:\uncen\{site_key}_trash
+owned_dir      = P:\uncen\{site_key}
+```
+
+PACO例:
+
+```text
+site_key       = paco
+new_master_dir = P:\uncen\paco_new_master
+new_mp4_dir    = P:\uncen\paco_new_mp4
+trash_dir      = P:\uncen\paco_trash
+owned_dir      = P:\uncen\paco
+```
+
+次サイト以降は、ディレクトリ作成から実施する。

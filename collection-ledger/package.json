@@ -20,6 +20,7 @@
     "check:owned-relations": "node --check apps/jobs/check-owned-relations.js",
     "check:thumb:paco": "node --check apps/jobs/collect-paco-thumbnails.js",
     "check:rename:paco:owned": "node --check apps/jobs/rename-paco-owned-files.js",
+    "check:paco-manual-dry-run": "node --check apps/jobs/paco-manual-dry-run.js",
     "job:health": "node apps/jobs/health-check.js",
     "job:master:paco:init-db": "node apps/jobs/master-pipeline.js --source paco --step init-db",
     "job:master:paco:db-status": "node apps/jobs/master-pipeline.js --source paco --step db-status",
@@ -55,7 +56,9 @@
     "job:thumb:paco:collect": "node apps/jobs/collect-paco-thumbnails.js --source paco --step collect",
     "job:rename:paco:owned:dry-run": "node apps/jobs/rename-paco-owned-files.js --dry-run --csv",
     "job:rename:paco:owned:execute": "node apps/jobs/rename-paco-owned-files.js --execute --csv",
-    "job:rename:paco:owned:rollback": "node apps/jobs/rename-paco-owned-files.js --rollback --manifest"
+    "job:rename:paco:owned:rollback": "node apps/jobs/rename-paco-owned-files.js --rollback --manifest",
+    "job:paco-manual:master-dry-run": "node apps/jobs/paco-manual-dry-run.js --source paco --step master-dry-run",
+    "job:paco-manual:owned-dry-run": "node apps/jobs/paco-manual-dry-run.js --source paco --step owned-dry-run"
   },
   "dependencies": {
     "axios": "^1.11.0",
