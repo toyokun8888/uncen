@@ -255,22 +255,25 @@ function buildRawRow(input) {
 function extractHeydouga4017Key(value) {
   const normalized = String(value || "").normalize("NFKC").replace(/\s+/g, " ").trim();
   const lower = normalized.toLowerCase();
-  const siteMatch = lower.match(/heydouga[\s_.-]*4017/);
+  const siteMatch = lower.match(/(?:heydouga|hey)[\s_.-]*4017/);
+  const heydougaPpvMatch = lower.match(/heydouga[\s_.-]*ppv/);
 
-  if (!siteMatch) {
+  if (!siteMatch && !heydougaPpvMatch) {
     return { status: "ignored", note: "heydouga_4017_not_found" };
   }
 
-  const after4017 = normalized.slice(siteMatch.index + siteMatch[0].length);
-  const windowText = after4017.slice(0, 80);
-  const keyMatch = windowText.match(/^[\s_.-]*(?:ppv[\s_.-]*)?([0-9]{1,5})(?:[\s_.-]+([0-9]{1,5}|[a-zA-Z]))?/i);
+  const anchorMatch = siteMatch || heydougaPpvMatch;
+  const afterAnchor = normalized.slice(anchorMatch.index + anchorMatch[0].length);
+  const windowText = afterAnchor.slice(0, 80);
+  const baseMatch = windowText.match(/^[\s_.-]*(?:ppv[\s_.-]*)?([0-9]{1,5})/i);
 
-  if (!keyMatch) {
+  if (!baseMatch) {
     return { status: "needs_review", note: "base_no_not_found_after_4017" };
   }
 
-  const baseNo = keyMatch[1];
-  const branchNo = keyMatch[2] || "";
+  const baseNo = baseMatch[1];
+  const afterBase = windowText.slice(baseMatch[0].length);
+  const branchNo = extractBranchNoAfterBase(afterBase);
 
   if (!branchNo) {
     return {
@@ -297,6 +300,26 @@ function extractHeydouga4017Key(value) {
     status: "matched",
     note: "",
   };
+}
+
+function extractBranchNoAfterBase(value) {
+  const text = String(value || "");
+  const partMatch = text.match(/^[\s_.-]*(?:part)[\s_.-]*([0-9]{1,5})/i);
+  if (partMatch) return partMatch[1];
+
+  const ppvBranchMatch = text.match(/^[\s_.-]*(?:ppv)[\s_.-]*([0-9]{1,5})/i);
+  if (ppvBranchMatch) return ppvBranchMatch[1];
+
+  const qualityMatch = text.match(/^[\s_.-]*(?:fhd|hd)[\s_.-]*([0-9]{1,5})/i);
+  if (qualityMatch) return qualityMatch[1];
+
+  const directNumberMatch = text.match(/^[\s_.-]+([0-9]{1,5})(?=\s|$|fhd|hd|[^0-9A-Za-z])/i);
+  if (directNumberMatch) return directNumberMatch[1];
+
+  const directLetterMatch = text.match(/^[\s_.-]+([a-zA-Z])(?![a-zA-Z])/);
+  if (directLetterMatch) return directLetterMatch[1];
+
+  return "";
 }
 
 function cleanText(value) {
@@ -777,6 +800,131 @@ async function getDbStatus() {
   } finally {
     await client.end();
   }
+}
+
+async function reextractStaging(args) {
+  const client = createPgClient();
+  const samples = [];
+  let rowsScanned = 0;
+  let rowsChanged = 0;
+  let rowsImprovedToMatched = 0;
+
+  await client.connect();
+  try {
+    const result = await client.query(
+      `
+        select
+          s.staging_id,
+          s.raw_id,
+          s.candidate_unique_key,
+          s.candidate_base_no,
+          s.candidate_branch_no,
+          s.review_status,
+          s.note,
+          r.raw_title
+        from cl.heydouga_4017_m002_master_staging s
+        join cl.heydouga_4017_m002_master_raw r
+          on r.raw_id = s.raw_id
+        where s.review_status in ('pending', 'needs_review')
+        order by s.staging_id
+      `
+    );
+
+    rowsScanned = result.rows.length;
+
+    if (args.apply) {
+      await client.query("begin");
+    }
+
+    for (const row of result.rows) {
+      const extraction = extractHeydouga4017Key(row.raw_title);
+      const next = {
+        candidate_unique_key: extraction.uniqueKey || "",
+        candidate_base_no: extraction.baseNo || "",
+        candidate_branch_no: extraction.branchNo || "",
+        review_status: extraction.status === "matched" ? "pending" : "needs_review",
+        note: extraction.note || "",
+      };
+      const current = {
+        candidate_unique_key: row.candidate_unique_key || "",
+        candidate_base_no: row.candidate_base_no || "",
+        candidate_branch_no: row.candidate_branch_no || "",
+        review_status: row.review_status || "",
+        note: row.note || "",
+      };
+
+      if (isSameExtraction(current, next)) {
+        continue;
+      }
+
+      rowsChanged += 1;
+      if (current.review_status === "needs_review" && next.review_status === "pending") {
+        rowsImprovedToMatched += 1;
+      }
+      if (samples.length < 30) {
+        samples.push({
+          staging_id: row.staging_id,
+          raw_id: row.raw_id,
+          title: row.raw_title,
+          before: current,
+          after: next,
+        });
+      }
+
+      if (args.apply) {
+        await client.query(
+          `
+            update cl.heydouga_4017_m002_master_staging
+            set candidate_unique_key = nullif($2, ''),
+                candidate_base_no = nullif($3, ''),
+                candidate_branch_no = nullif($4, ''),
+                review_status = $5,
+                note = nullif($6, ''),
+                updated_at = now()
+            where staging_id = $1
+              and review_status in ('pending', 'needs_review')
+          `,
+          [
+            row.staging_id,
+            next.candidate_unique_key,
+            next.candidate_base_no,
+            next.candidate_branch_no,
+            next.review_status,
+            next.note,
+          ]
+        );
+      }
+    }
+
+    if (args.apply) {
+      await client.query("commit");
+    }
+  } catch (error) {
+    if (args.apply) {
+      await client.query("rollback");
+    }
+    throw error;
+  } finally {
+    await client.end();
+  }
+
+  return {
+    applied: args.apply,
+    rowsScanned,
+    rowsChanged,
+    rowsImprovedToMatched,
+    samples,
+  };
+}
+
+function isSameExtraction(left, right) {
+  return (
+    left.candidate_unique_key === right.candidate_unique_key &&
+    left.candidate_base_no === right.candidate_base_no &&
+    left.candidate_branch_no === right.candidate_branch_no &&
+    left.review_status === right.review_status &&
+    left.note === right.note
+  );
 }
 
 async function exportStagingReview(args) {
@@ -1417,6 +1565,25 @@ async function main() {
           run_id: result.runId,
           summary: result.summary,
           output_paths: result.outputPaths,
+        },
+        null,
+        2
+      )}\n`
+    );
+    return;
+  }
+
+  if (args.step === "reextract-staging") {
+    const result = await reextractStaging(args);
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ok: true,
+          source_name: SOURCE_NAME,
+          step: args.step,
+          dry_run: !args.apply,
+          env_file_loaded: Boolean(loadedEnv),
+          reextract: result,
         },
         null,
         2
