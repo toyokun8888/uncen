@@ -150,11 +150,11 @@ function ensureCollectDirs(drives) {
   const dirs = [];
 
   for (const drive of drives) {
-    const root = `${drive}:\\uncen`;
-    if (!fs.existsSync(root)) {
+    const driveRoot = `${drive}:\\`;
+    if (!fs.existsSync(driveRoot)) {
       continue;
     }
-    const targetDir = path.join(root, SOURCE_NAME);
+    const targetDir = path.join(driveRoot, "uncen", SOURCE_NAME);
     fs.mkdirSync(targetDir, { recursive: true });
     dirs.push(targetDir);
   }
@@ -163,8 +163,8 @@ function ensureCollectDirs(drives) {
 }
 
 function scanDrive(drive, masterKeys, limit) {
-  const root = `${drive}:\\uncen`;
-  const targetDir = path.join(root, SOURCE_NAME);
+  const root = `${drive}:\\`;
+  const targetDir = path.join(root, "uncen", SOURCE_NAME);
   const rows = [];
   const errors = [];
 
@@ -185,6 +185,7 @@ function scanDrive(drive, masterKeys, limit) {
 function walkFiles(root, targetDir, limit, rows, errors, onFile) {
   const stack = [root];
   const normalizedTarget = normalizePath(targetDir);
+  const skipDirectoryNames = new Set(["$recycle.bin", "system volume information"]);
 
   while (stack.length > 0) {
     if (limit > 0 && rows.length >= limit) {
@@ -211,6 +212,9 @@ function walkFiles(root, targetDir, limit, rows, errors, onFile) {
         continue;
       }
       if (entry.isDirectory()) {
+        if (skipDirectoryNames.has(entry.name.toLowerCase())) {
+          continue;
+        }
         stack.push(fullPath);
         continue;
       }
@@ -238,7 +242,10 @@ function buildCandidateRow(drive, root, targetDir, filePath, masterKeys) {
     return null;
   }
 
-  const extraction = extractHeydouga4017Key(haystack);
+  let extraction = extractHeydouga4017Key(parsed.name);
+  if (!extraction.baseNo) {
+    extraction = extractHeydouga4017Key(haystack);
+  }
   const master = extraction.uniqueKey ? masterKeys.get(extraction.uniqueKey) : null;
   if (extraction.anchorType === "heydouga_ppv_without_4017" && !master) {
     return null;
@@ -311,7 +318,7 @@ function extractHeydouga4017Key(value) {
   const normalized = normalizeForMatch(value);
   const lower = normalized.toLowerCase();
   const siteMatch = lower.match(/(?:heydouga|hey)[\s_.-]*4017/);
-  const heydougaPpvMatch = lower.match(/heydouga[\s_.-]*ppv/);
+  const heydougaPpvMatch = lower.match(/(?:heydouga|hey)[\s_.-]*ppv/);
   const bare4017Match = lower.match(/\b4017\b/);
 
   if (!siteMatch && !heydougaPpvMatch && !bare4017Match) {
@@ -381,6 +388,12 @@ function extractBranchNoAfterBase(value) {
 
   const directLetterMatch = text.match(/^[\s_.-]+([a-zA-Z])(?![a-zA-Z])/);
   if (directLetterMatch) return directLetterMatch[1];
+
+  const trailingQualityMatch = text.match(/(?:^|[\s_.-])(?:fhd|hd)[\s_.-]*([0-9]{1,5})(?=$|[\s_.-]|[^0-9A-Za-z])/i);
+  if (trailingQualityMatch) return trailingQualityMatch[1];
+
+  const trailingPartMatch = text.match(/(?:^|[\s_.-])part[\s_.-]*([0-9]{1,5})(?=$|[\s_.-]|[^0-9A-Za-z])/i);
+  if (trailingPartMatch) return trailingPartMatch[1];
 
   return "";
 }

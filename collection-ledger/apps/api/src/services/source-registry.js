@@ -9,6 +9,14 @@ const SOURCE_CONFIGS = {
     thumbnailTable: "cl.paco_m001_thumbnail_assets",
     ownedTable: "cl.paco_owned_file",
   },
+  heydouga_4017: {
+    source: "heydouga_4017",
+    siteCode: "heydouga_4017",
+    libraryView: "cl.heydouga_4017_v_library_items",
+    completionView: "cl.heydouga_4017_v_completion_items",
+    thumbnailTable: "cl.heydouga_4017_v_thumbnail_assets",
+    ownedTable: "cl.heydouga_4017_owned_file",
+  },
 };
 
 function getSourceConfig(source) {
