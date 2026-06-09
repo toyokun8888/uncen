@@ -1,0 +1,141 @@
+1pondo / 一本道 実装引き継ぎメモ
+
+このメモは、Codexのシェル起動経路が一時停止して memo.txt を安全に読み直せない状況で作成した、次チャット引き継ぎ用の回答欄サマリーです。
+元の memo.txt の質問本文は壊さないため、この別ファイルに追記相当として残します。
+
+Q1. source名
+回答: 1pondo
+
+Q2. 公式サイト名
+回答: 1Pondo / 一本道
+
+Q3. UI表示名
+回答: 1Pondo
+
+Q4. マスター番号
+回答: m005
+
+Q5. source名とDB接頭語
+回答: source/site_code は 1pondo。PostgreSQL識別子は先頭数字を避けるため、DB接頭語は onepondo を推奨。
+
+Q6. マスター取得元の一覧URL
+回答: https://www.1pondo.tv/list/?page=1&o=newest
+補足: HTML一覧ではなく、裏の公式JSONを使う。
+
+Q7. マスター取得元のページング方式
+回答: https://www.1pondo.tv/dyn/phpauto/movie_lists/list_newest_{offset}.json
+offset は 0, 50, 100 ... 4750。
+
+Q8. マスター取得元の1ページ件数
+回答: 公式JSONの SplitSize は 50。最後の offset 4750 は35件。
+
+Q9. ユーザー想定の最大ページ数
+回答: 公式ブラウザ上は約200ページ想定。ただし実装ではJSON offset方式で全件取得する。
+
+Q10. マスター取得で詳細ページを見る必要
+回答: 不要。公式JSONだけで MovieID、タイトル、出演者、配信日、説明、タグ、サムネURLを取得可能。
+
+Q11. サイト内で一意になる値
+回答: MovieID。形式は MMDDYY_NNN。例: 060726_001。
+
+Q12. 所持ファイル名に含まれる一意キー候補
+回答: MMDDYY_NNN。例: hhd800.com@051525_001-1PON、1pondo-040525_001、011123_001-1pon、1pondo-090225_001-nyap2p.com。
+
+Q13. 表記揺れ
+回答: あり。1pondo / 1pon / 大文字小文字 / 前後の配布元文字列 / ハイフンやアンダースコア混在に注意。IDは ([0-9]{6})[_-]([0-9]{3}) で抽出し、MMDDYY_NNN に正規化する。
+
+Q14. 一覧ページから取る項目
+回答: 公式JSON Rows から MovieID、Title、TitleEn、Release、Duration、Actor、ActressesJa、ActressesEn、Desc、UCNAME、MovieThumb、ThumbHigh、ThumbMed、ThumbLow、raw_payload。
+
+Q15. 詳細ページから取る項目
+回答: なし。詳細ページ取得は不要。
+
+Q16. タイトル取得
+回答: 可能。公式JSONの Title / TitleEn。
+
+Q17. 出演者取得
+回答: 可能。公式JSONの Actor、ActressesJa、ActressesEn。
+
+Q18. 公開日取得
+回答: 可能。公式JSONの Release。MovieIDのMMDDYYからも補助的に推定可能だが、公式JSON値を優先。
+
+Q19. 作品URL取得
+回答: JSONに直接URLがない場合は MovieID から生成可能。候補: https://www.1pondo.tv/movies/{MovieID}/ またはサイトの既存リンク規則を実装時に最終確認。
+
+Q20. サムネイルURL取得
+回答: 可能。公式JSONの ThumbHigh を優先。例: https://www.1pondo.tv/moviepages/060726_001/images/str.jpg
+
+Q21. rawとして残したい値
+回答: JSON Row全体、取得JSON URL、offset、TotalRows、SplitSize、取得日時。
+
+Q22. サムネイルURLの取得元
+回答: 公式JSONの ThumbHigh / ThumbMed / MovieThumb。補完規則は https://www.1pondo.tv/moviepages/{MovieID}/images/str.jpg
+
+Q23. サムネイルURLは一覧で取れるか
+回答: 取れる。公式JSONに ThumbHigh 等が含まれる。
+
+Q24. サムネイル取得に詳細ページが必要か
+回答: 不要。
+
+Q25. 所持ファイル収集で使う検索語
+回答: 1pon
+
+Q26. PM2自動実行
+回答: 不要。まずは手動ジョブ/バッチ運用で十分。
+
+Q27. DL可能リンク検索元
+回答: https://hijav.net/category/jav-uncensored/1pondo/page/1/
+
+Q28. DL参照の検索キーワード
+回答: 1pondo / 1pon / MMDDYY_NNN
+
+Q29. DL参照の最大ページ数
+回答: 117。page/117 は200、page/118 は404確認済み。
+
+Q30. DL参照は一覧ページにリンクがあるか
+回答: あり。確認したページでは一覧本文内に Rapidgator、Ddownload、Katfile 等のリンクが含まれていた。
+
+Q31. DL参照は詳細ページを見る必要があるか
+回答: 基本不要。一覧で取れる見込み。ただしリンク欠落時の詳細ページフォールバックを残すと安全。
+
+Q32. ブラウザUI上のサイト表示名
+回答: 1Pondo
+
+Q33. ブラウザUIのタブ名
+回答: 1Pondo
+
+Q34. ブラウザUIのサイドバー名
+回答: 1Pondo
+
+Q35. サイト固有で追加したい表示列
+回答: なし。10mu/HEYZOの共通列で足りる。必要なら MovieID、Release、Actor、Owned、Thumbnail、DL availability。
+
+Q36. サイト固有で追加したい絞り込み
+回答: なし。既存の所有/未所有、サムネ有無、DL有無、キーワード検索で足りる。
+
+実装時の推奨ファイル
+- ops/sql/110_1pondo_site.sql
+- apps/jobs/1pondo-pipeline.js
+- apps/jobs/1pondo-owned-operations.js
+- apps/api/src/services/source-registry.js
+- apps/web/src/App.tsx など既存サイトタブ定義箇所
+- docs/1pondo-site-design.md
+- docs/manual-batch-operations.md への追記
+
+DB命名方針
+- source/site_code: 1pondo
+- DB prefix: onepondo
+- master_no: m005
+- master table: cl.onepondo_m005_master
+- raw table: cl.onepondo_m005_master_raw
+- thumbnail table: cl.onepondo_m005_thumbnail_assets
+- DL reference table: cl.onepondo_dl_reference
+- owned table: cl.onepondo_owned_file
+- view: cl.onepondo_v_library_items / cl.onepondo_v_completion_items / cl.onepondo_v_thumbnail_assets
+
+実装時の注意
+- 所有照合は MMDDYY_NNN exact を最優先。
+- MMDDYY だけでは同日複数作品があり得るので、曖昧一致扱いにする。
+- サムネ保存先は storage/thumbnails/1pondo/master/{movie_code}.jpg を推奨。
+- HIJAVは古いページほどBlogger画像が混じるが、公式サムネが強いのでDL参照側画像には依存しない。
+- 最終確認は master_count 約4785、thumbnail成功数、DL matched/missing、owned_count、ブラウザの1Pondoタブ表示、サムネ表示、DLリンク、所有フィルタ。

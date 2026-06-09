@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 
 const SOURCE_NAME = "heydouga_4017";
 const DEFAULT_INPUT_DIR = "F:\\uncen\\heydouga_4017_new_mp4";
@@ -39,6 +40,23 @@ function loadEnvFile(envFile) {
     if (key && process.env[key] === undefined) process.env[key] = value;
   }
   return target;
+}
+
+function runVideoMetadataCollect(envFile) {
+  const scriptPath = path.resolve(__dirname, "collect-video-metadata.js");
+  const commandArgs = [scriptPath, "--source", SOURCE_NAME, "--step", "collect"];
+  if (envFile) commandArgs.push("--env-file", envFile);
+  const result = spawnSync(process.execPath, commandArgs, {
+    cwd: path.resolve(__dirname, "..", ".."),
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    throw new Error(`video metadata collect failed: ${result.stderr || result.stdout}`);
+  }
+  const output = String(result.stdout || "").trim();
+  const jsonStart = output.indexOf("{");
+  return jsonStart >= 0 ? JSON.parse(output.slice(jsonStart)) : {};
 }
 
 function unquoteEnvValue(value) {
@@ -452,6 +470,9 @@ async function main() {
 
     if (args.step === "apply") {
       const result = await applyPlan(client, dirs, plan);
+      if (result.upsertedOwned > 0) {
+        result.video_metadata = runVideoMetadataCollect(args.envFile);
+      }
       const planPath = writePlanCsv(dirs, plan, "applied");
       process.stdout.write(
         `${JSON.stringify({ ok: true, step: args.step, env_file_loaded: Boolean(loadedEnv), input_dir: dirs.inputDir, target_dir: dirs.targetDir, plan_path: planPath, result, summary: summarizePlan(plan) }, null, 2)}\n`

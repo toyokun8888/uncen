@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 
 const SOURCE_NAME = "heydouga_4017";
 const DEFAULT_ROOTS = [
@@ -54,6 +55,23 @@ function loadEnvFile(envFile) {
     if (key && process.env[key] === undefined) process.env[key] = value;
   }
   return target;
+}
+
+function runVideoMetadataCollect(envFile) {
+  const scriptPath = path.resolve(__dirname, "collect-video-metadata.js");
+  const commandArgs = [scriptPath, "--source", SOURCE_NAME, "--step", "collect"];
+  if (envFile) commandArgs.push("--env-file", envFile);
+  const result = spawnSync(process.execPath, commandArgs, {
+    cwd: path.resolve(__dirname, "..", ".."),
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    throw new Error(`video metadata collect failed: ${result.stderr || result.stdout}`);
+  }
+  const output = String(result.stdout || "").trim();
+  const jsonStart = output.indexOf("{");
+  return jsonStart >= 0 ? JSON.parse(output.slice(jsonStart)) : {};
 }
 
 function unquoteEnvValue(value) {
@@ -409,6 +427,9 @@ async function main() {
       const notMatched = rows.filter((row) => row.verify_status !== "matched_master");
       if (notMatched.length > 0) throw new Error(`Owned scan has not_matched rows: ${notMatched.length}`);
       const syncResult = await upsertOwnedRows(client, rows);
+      if (syncResult.upserted > 0) {
+        syncResult.video_metadata = runVideoMetadataCollect(args.envFile);
+      }
       const ownedSummary = await fetchOwnedSummary(client);
       process.stdout.write(
         `${JSON.stringify({ ok: true, step: args.step, env_file_loaded: Boolean(loadedEnv), output_path: outputPath, roots: args.roots, scan_summary: summary, sync_result: syncResult, owned_summary: ownedSummary }, null, 2)}\n`

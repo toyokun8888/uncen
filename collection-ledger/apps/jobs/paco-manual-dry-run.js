@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const cheerio = require("cheerio");
+const { spawnSync } = require("child_process");
 
 const PACO_SOURCE_NAME = "paco";
 const PACO_BASE_URL = "https://www.caribbeancom.com";
@@ -82,6 +83,23 @@ function loadEnvFile(envFile) {
     throw result.error;
   }
   return true;
+}
+
+function runVideoMetadataCollect(envFile) {
+  const scriptPath = path.resolve(__dirname, "collect-video-metadata.js");
+  const commandArgs = [scriptPath, "--source", PACO_SOURCE_NAME, "--step", "collect"];
+  if (envFile) commandArgs.push("--env-file", envFile);
+  const result = spawnSync(process.execPath, commandArgs, {
+    cwd: path.resolve(__dirname, "..", ".."),
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    throw new Error(`video metadata collect failed: ${result.stderr || result.stdout}`);
+  }
+  const output = String(result.stdout || "").trim();
+  const jsonStart = output.indexOf("{");
+  return jsonStart >= 0 ? JSON.parse(output.slice(jsonStart)) : {};
 }
 
 function buildRunId(step) {
@@ -515,6 +533,7 @@ async function runOwnedApply(args) {
     .filter((row) => row.apply_action === "move_to_owned")
     .map((row) => buildOwnedDbRow(row));
   const dbResult = await upsertOwnedDbRows(ownedDbRows);
+  const videoMetadataResult = ownedDbRows.length > 0 ? runVideoMetadataCollect(args.envFile) : {};
 
   const output = {
     ok: true,
@@ -528,6 +547,7 @@ async function runOwnedApply(args) {
     moved_to_owned_count: ownedDbRows.length,
     moved_to_trash_count: movedRows.length - ownedDbRows.length,
     db_result: dbResult,
+    video_metadata_result: videoMetadataResult,
     json_path: "",
     csv_path: "",
     manifest_json_path: manifestOutput.json_path,

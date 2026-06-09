@@ -1,5 +1,8 @@
 # Site Expansion Runbook
 
+Manual thumbnail and per-NAS owned-file batch operations are documented in
+[`manual-batch-operations.md`](manual-batch-operations.md).
+
 この文書は、PACOで確立した進め方を、次のサイト追加時に再現するための手順書。
 
 目的は、次のプロジェクト名、DB取得先サイトアドレス、サムネイル取得先、実ファイルの集め方などを質問票で確認し、回答後にマスター、所持、DL参照、ブラウザ表示、本運用バッチまで順番に実装できる状態にすること。

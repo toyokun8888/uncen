@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 
 const PACO_SITE_ID = 1;
 const PACO_SOURCE_NAME = "paco";
@@ -71,6 +72,23 @@ function loadEnvFile(envFile) {
   }
 
   return target;
+}
+
+function runVideoMetadataCollect(envFile) {
+  const scriptPath = path.resolve(__dirname, "collect-video-metadata.js");
+  const commandArgs = [scriptPath, "--source", PACO_SOURCE_NAME, "--step", "collect"];
+  if (envFile) commandArgs.push("--env-file", envFile);
+  const result = spawnSync(process.execPath, commandArgs, {
+    cwd: path.resolve(__dirname, "..", ".."),
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    throw new Error(`video metadata collect failed: ${result.stderr || result.stdout}`);
+  }
+  const output = String(result.stdout || "").trim();
+  const jsonStart = output.indexOf("{");
+  return jsonStart >= 0 ? JSON.parse(output.slice(jsonStart)) : {};
 }
 
 function unquoteEnvValue(value) {
@@ -392,6 +410,9 @@ async function main() {
     }
 
     const result = await upsertOwnedFiles(plan.fileRows);
+    if (plan.fileRows.length > 0) {
+      result.video_metadata = runVideoMetadataCollect(args.envFile);
+    }
     process.stdout.write(
       `${JSON.stringify({ ok: true, step: args.step, dry_run: false, env_file_loaded: Boolean(loadedEnv), result }, null, 2)}\n`
     );

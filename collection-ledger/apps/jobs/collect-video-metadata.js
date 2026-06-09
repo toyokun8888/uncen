@@ -4,12 +4,38 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
-const PACO_SOURCE_NAME = "paco";
 const DEFAULT_TIMEOUT_MS = 30000;
+const SOURCE_CONFIGS = {
+  paco: {
+    ownedTable: "cl.paco_owned_file",
+    metadataTable: "cl.paco_owned_file_video_metadata",
+    initSqlPaths: ["060_paco_browser_support.sql"],
+  },
+  heydouga_4017: {
+    ownedTable: "cl.heydouga_4017_owned_file",
+    metadataTable: "cl.heydouga_4017_owned_file_video_metadata",
+    initSqlPaths: ["080_heydouga_4017_owned_file.sql"],
+  },
+  "10musume": {
+    ownedTable: "cl.tenmusume_owned_file",
+    metadataTable: "cl.tenmusume_owned_file_video_metadata",
+    initSqlPaths: ["090_tenmusume_site.sql"],
+  },
+  heyzo: {
+    ownedTable: "cl.heyzo_owned_file",
+    metadataTable: "cl.heyzo_owned_file_video_metadata",
+    initSqlPaths: ["100_heyzo_site.sql"],
+  },
+  "1pondo": {
+    ownedTable: "cl.onepondo_owned_file",
+    metadataTable: "cl.onepondo_owned_file_video_metadata",
+    initSqlPaths: ["110_1pondo_site.sql"],
+  },
+};
 
 function parseArgs(argv) {
   const args = {
-    source: PACO_SOURCE_NAME,
+    source: "paco",
     step: "collect",
     envFile: "",
     dryRun: false,
@@ -56,6 +82,15 @@ function parseArgs(argv) {
   }
 
   return args;
+}
+
+function getSourceConfig(source) {
+  const key = String(source || "paco").trim().toLowerCase();
+  const config = SOURCE_CONFIGS[key];
+  if (!config) {
+    throw new Error(`Unsupported source: ${source}`);
+  }
+  return { source: key, ...config };
 }
 
 function parsePositiveInt(value, label) {
@@ -135,20 +170,22 @@ function createPgClient() {
   });
 }
 
-async function initDb() {
-  const sqlPath = path.resolve(__dirname, "..", "..", "ops", "sql", "060_paco_browser_support.sql");
-  const sql = fs.readFileSync(sqlPath, "utf8");
+async function initDb(config) {
   const client = createPgClient();
 
   await client.connect();
   try {
-    await client.query(sql);
+    for (const sqlFileName of config.initSqlPaths) {
+      const sqlPath = path.resolve(__dirname, "..", "..", "ops", "sql", sqlFileName);
+      const sql = fs.readFileSync(sqlPath, "utf8");
+      await client.query(sql);
+    }
   } finally {
     await client.end();
   }
 }
 
-async function loadTargets(args) {
+async function loadTargets(args, config) {
   const client = createPgClient();
   const limitSql = args.limit > 0 ? "limit $1" : "";
   const params = args.limit > 0 ? [args.limit] : [];
@@ -157,7 +194,7 @@ async function loadTargets(args) {
     : `
       and not exists (
         select 1
-        from cl.paco_owned_file_video_metadata metadata
+        from ${config.metadataTable} metadata
         where metadata.owned_file_id = owned_file.owned_file_id
           and metadata.probe_status = 'ok'
       )
@@ -175,7 +212,7 @@ async function loadTargets(args) {
           owned_file.file_ext,
           owned_file.file_size_bytes,
           owned_file.file_mtime
-        from cl.paco_owned_file owned_file
+        from ${config.ownedTable} owned_file
         where true
           ${missingOnlySql}
         order by owned_file.updated_at desc nulls last, owned_file.owned_file_id desc
@@ -222,7 +259,7 @@ async function inspectRow(row, args) {
   const filePath = normalizeWindowsPath(row.file_path);
   const fileExt = String(row.file_ext || path.extname(filePath)).toLowerCase().replace(/^\./, "");
 
-  if (!["mp4", "mkv", "mov", "avi", "wmv"].includes(fileExt)) {
+  if (!["mp4", "mkv", "mov", "avi", "wmv", "ts", "m2ts"].includes(fileExt)) {
     return {
       probe_status: "unsupported",
       probe_error: `unsupported_extension:${fileExt || "none"}`,
@@ -337,10 +374,10 @@ function classifyResolution(width, height) {
   return "low";
 }
 
-async function upsertResult(client, row, result) {
+async function upsertResult(client, row, result, config) {
   await client.query(
     `
-      insert into cl.paco_owned_file_video_metadata (
+      insert into ${config.metadataTable} (
         owned_file_id,
         movie_code,
         file_path,
@@ -387,8 +424,8 @@ async function upsertResult(client, row, result) {
   );
 }
 
-async function collect(args) {
-  const rows = await loadTargets(args);
+async function collect(args, config) {
+  const rows = await loadTargets(args, config);
   const client = createPgClient();
 
   await client.connect();
@@ -413,7 +450,7 @@ async function collect(args) {
               `${result.video_width || ""}x${result.video_height || ""} path=${normalizeWindowsPath(row.file_path)}\n`
           );
         } else {
-          await upsertResult(client, row, result);
+          await upsertResult(client, row, result, config);
         }
 
         if (result.probe_status === "ok") ok += 1;
@@ -440,19 +477,19 @@ async function collect(args) {
   }
 }
 
-async function status() {
+async function status(config) {
   const client = createPgClient();
   await client.connect();
   try {
     const result = await client.query(
       `
         select
-          (select count(*)::integer from cl.paco_owned_file) as owned_file_count,
-          (select count(*)::integer from cl.paco_owned_file_video_metadata) as metadata_count,
-          (select count(*)::integer from cl.paco_owned_file_video_metadata where probe_status = 'ok') as ok_count,
-          (select count(*)::integer from cl.paco_owned_file_video_metadata where resolution_class = '4k') as resolution_4k_count,
-          (select count(*)::integer from cl.paco_owned_file_video_metadata where resolution_class = 'hd') as resolution_hd_count,
-          (select count(*)::integer from cl.paco_owned_file_video_metadata where resolution_class = 'low') as resolution_low_count
+          (select count(*)::integer from ${config.ownedTable}) as owned_file_count,
+          (select count(*)::integer from ${config.metadataTable}) as metadata_count,
+          (select count(*)::integer from ${config.metadataTable} where probe_status = 'ok') as ok_count,
+          (select count(*)::integer from ${config.metadataTable} where probe_status = 'ok' and resolution_class = '4k') as resolution_4k_count,
+          (select count(*)::integer from ${config.metadataTable} where probe_status = 'ok' and resolution_class = 'hd') as resolution_hd_count,
+          (select count(*)::integer from ${config.metadataTable} where probe_status = 'ok' and resolution_class = 'low') as resolution_low_count
       `
     );
     return result.rows[0];
@@ -463,21 +500,18 @@ async function status() {
 
 async function main() {
   const args = parseArgs(process.argv);
+  const config = getSourceConfig(args.source);
   const loadedEnv = loadEnvFile(args.envFile);
 
-  if (args.source !== PACO_SOURCE_NAME) {
-    throw new Error(`Unsupported source: ${args.source}`);
-  }
-
   if (args.step === "init-db") {
-    await initDb();
-    process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, env_file_loaded: Boolean(loadedEnv) }, null, 2)}\n`);
+    await initDb(config);
+    process.stdout.write(`${JSON.stringify({ ok: true, source: config.source, step: args.step, env_file_loaded: Boolean(loadedEnv) }, null, 2)}\n`);
     return;
   }
 
   if (args.step === "status") {
-    const currentStatus = await status();
-    process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, env_file_loaded: Boolean(loadedEnv), status: currentStatus }, null, 2)}\n`);
+    const currentStatus = await status(config);
+    process.stdout.write(`${JSON.stringify({ ok: true, source: config.source, step: args.step, env_file_loaded: Boolean(loadedEnv), status: currentStatus }, null, 2)}\n`);
     return;
   }
 
@@ -485,8 +519,8 @@ async function main() {
     throw new Error(`Unsupported step: ${args.step}`);
   }
 
-  const result = await collect(args);
-  process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, env_file_loaded: Boolean(loadedEnv), result }, null, 2)}\n`);
+  const result = await collect(args, config);
+  process.stdout.write(`${JSON.stringify({ ok: true, source: config.source, step: args.step, env_file_loaded: Boolean(loadedEnv), result }, null, 2)}\n`);
 }
 
 main().catch((error) => {

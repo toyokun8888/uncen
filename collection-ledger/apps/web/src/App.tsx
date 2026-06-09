@@ -324,6 +324,7 @@ function CompletionPage({
 }) {
   const [query, setQuery] = useState("");
   const [hideOwned, setHideOwned] = useState(false);
+  const [page, setPage] = useState(1);
 
   const filteredItems = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -348,6 +349,17 @@ function CompletionPage({
       noDl: items.filter((item) => !item.isOwned && !item.hasDlReference).length,
     };
   }, [items]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
+  const pagedItems = filteredItems.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  useEffect(() => {
+    setPage(1);
+  }, [hideOwned, query, source]);
+
+  useEffect(() => {
+    setPage((currentPage) => Math.min(Math.max(1, currentPage), totalPages));
+  }, [totalPages]);
 
   return (
     <div className="completion-page">
@@ -405,13 +417,14 @@ function CompletionPage({
           <span>owned {stats.owned}</span>
           <span>downloadable {stats.dl}</span>
           <span>not available {stats.noDl}</span>
+          <Pager page={page} totalPages={totalPages} onPage={setPage} />
         </section>
 
         {loading ? (
           <div className="loading-panel">Loading...</div>
         ) : (
           <div className="completion-list">
-            {filteredItems.map((item) => (
+            {pagedItems.map((item) => (
               <CompletionCard key={item.movieCode} item={item} />
             ))}
           </div>

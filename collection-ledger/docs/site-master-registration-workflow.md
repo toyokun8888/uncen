@@ -1,8 +1,37 @@
 # Site Master Registration Workflow
 
+Manual thumbnail and per-NAS owned-file batch operations are documented in
+[`manual-batch-operations.md`](manual-batch-operations.md).
+
 This document records the agreed workflow for adding another source site to
 Collection Ledger. Follow this order when a new site is added, so the work stays
 separated into common parts and site-specific parts.
+
+## Video Resolution Rule
+
+All browser 4K/HD/LOW labels must come from real video metadata collected by
+`apps/jobs/collect-video-metadata.js` with `ffprobe-static`.
+
+Do not classify resolution from file names in browser views. Each site must
+define an owned-file metadata table in this form:
+
+```text
+cl.{owned_table_name}_video_metadata
+```
+
+Examples:
+
+```text
+cl.paco_owned_file_video_metadata
+cl.heydouga_4017_owned_file_video_metadata
+cl.tenmusume_owned_file_video_metadata
+cl.heyzo_owned_file_video_metadata
+cl.onepondo_owned_file_video_metadata
+```
+
+The library and completion views must join that metadata table and evaluate
+only rows with `probe_status = 'ok'` for `resolution_class`, `best_resolution_class`,
+`has_4k`, and `has_hd`.
 
 ## 目的
 
