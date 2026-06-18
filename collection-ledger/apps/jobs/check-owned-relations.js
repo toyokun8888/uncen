@@ -3,7 +3,7 @@ const path = require("path");
 
 const DEFAULT_TARGET_DIR = "J:\\uncen\\paco";
 const DEFAULT_SOURCE = "paco";
-const DEFAULT_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P"];
+const DEFAULT_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"];
 
 function parseArgs(argv) {
   const args = {

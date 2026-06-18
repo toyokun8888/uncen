@@ -26,6 +26,20 @@ Every manual batch operation must have:
 - an idempotent database update
 - a recovery path for interrupted execution
 
+Before reporting completion, verify only with command output:
+
+- file/folder placement: `Test-Path` or `Get-ChildItem`
+- batch parameters: `Select-String`
+- JavaScript syntax: `node --check`
+- running jobs: process check when relevant
+
+End with a direct request checklist: each requested item is either `done` with
+the verification source above, or `not done`. Do not mark inferred work as done.
+
+Keep initial/full-crawl commands separate from manual/differential commands.
+Manual batches must use the documented differential limits unless the operator
+explicitly asks for a one-off rebuild.
+
 ## 2. Site Variables
 
 Decide these values before implementing a new site:
@@ -325,3 +339,42 @@ Jobs:
 apps/jobs/1pondo-owned-operations.js
 apps/jobs/import-onepondo-manual-thumbnails.js
 ```
+
+Manual batch files:
+
+```text
+P:\uncen\1pondo_new_master\1pondo_master_apply.bat
+?:\uncen\1pondo_new_mp4\1pondo_owned_apply.bat
+P:\uncen\1pondo_thumbnails\1pondo_manual_thumbnail_apply.bat
+```
+
+The manual master batch is for differential updates. It must fetch only the
+newest 3 official JSON pages by default:
+
+```text
+node apps\jobs\1pondo-pipeline.js --step master --max-pages 3
+```
+
+Do not use the initial full-crawl size such as `--max-pages 96` in the manual
+batch. Full crawls are only for explicit one-off rebuild work.
+
+The owned mp4 batch must be present under each active NAS root:
+
+```text
+D:\uncen\1pondo_new_mp4
+E:\uncen\1pondo_new_mp4
+F:\uncen\1pondo_new_mp4
+G:\uncen\1pondo_new_mp4
+H:\uncen\1pondo_new_mp4
+I:\uncen\1pondo_new_mp4
+J:\uncen\1pondo_new_mp4
+K:\uncen\1pondo_new_mp4
+L:\uncen\1pondo_new_mp4
+N:\uncen\1pondo_new_mp4
+P:\uncen\1pondo_new_mp4
+Q:\uncen\1pondo_new_mp4
+```
+
+After `owned-apply` registers files, `1pondo-owned-operations.js` runs
+`collect-video-metadata.js --source 1pondo --step collect`, so 4K/HD/LOW labels
+come from ffprobe video dimensions, matching the other sources.

@@ -7,7 +7,7 @@ const { spawnSync } = require("child_process");
 const SOURCE = "heyzo";
 const DB_PREFIX = "heyzo";
 const SEARCH_TEXT = "heyzo";
-const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P"];
+const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"];
 const VIDEO_EXTENSIONS = new Set([".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpg", ".mpeg", ".ts", ".wmv"]);
 
 function parseArgs(argv) {
@@ -232,6 +232,27 @@ function matchMaster(fileName, maps, allowRenamed = false) {
   return { master: null, candidates, reason: "not_matched" };
 }
 
+function missingMasterFromMatch(match) {
+  if (match.master || match.reason !== "not_matched" || match.candidates.length !== 1) return null;
+  const movieCode = match.candidates[0];
+  const relationKey = movieNumber(movieCode);
+  if (!relationKey) return null;
+  return {
+    movie_code: movieCode,
+    relation_key_mmddyy: relationKey,
+    title: movieCode,
+    actor_name: "",
+    needs_master_insert: true,
+  };
+}
+
+function ownedFileName(master, ext) {
+  const title = cleanName(master.title);
+  const actor = cleanName(master.actor_name);
+  if (master.needs_master_insert) return `${master.movie_code}${ext}`;
+  return `${master.movie_code}_${title}${actor ? `_${actor}` : ""}${ext}`;
+}
+
 async function buildOwnedPlan(client, inputDir) {
   const resolvedInput = path.resolve(inputDir);
   const drive = driveOf(resolvedInput);
@@ -248,12 +269,11 @@ async function buildOwnedPlan(client, inputDir) {
   for (const filePath of scan.files) {
     const stat = fs.statSync(filePath);
     const match = matchMaster(path.basename(filePath), maps, false);
-    const master = match.master;
+    const master = match.master || missingMasterFromMatch(match);
     const ext = path.extname(filePath).toLowerCase();
-    const actor = master ? cleanName(master.actor_name) : "";
-    const title = master ? cleanName(master.title) : "";
-    const newName = master ? `${master.movie_code}_${title}${actor ? `_${actor}` : ""}${ext}` : path.basename(filePath);
-    const targetPath = master ? uniqueTargetPath(targetDir, newName, reservedTargets) : path.join(trashDirForDrive(drive), path.basename(filePath));
+    const newName = master ? ownedFileName(master, ext) : "";
+    const targetPath = master ? uniqueTargetPath(targetDir, newName, reservedTargets) : "";
+    const matchReason = master?.needs_master_insert ? "code_without_master" : match.reason;
     let status = master ? "ready" : match.reason;
     if (!stat.size) status = "invalid_video_file";
     if (master && fs.existsSync(targetPath) && path.resolve(targetPath).toLowerCase() !== path.resolve(filePath).toLowerCase()) status = "target_exists";
@@ -261,12 +281,15 @@ async function buildOwnedPlan(client, inputDir) {
       status,
       operation: master ? "rename_move_register" : "review_only",
       movie_code: master?.movie_code || "",
-      match_reason: match.reason,
+      match_reason: matchReason,
       candidates: match.candidates.join(" | "),
       source_path: filePath,
       target_path: targetPath,
       file_name: path.basename(filePath),
       new_file_name: master ? newName : "",
+      new_master: master?.needs_master_insert ? "true" : "false",
+      master_relation_key: master?.needs_master_insert ? master.relation_key_mmddyy : "",
+      master_title: master?.needs_master_insert ? master.title : "",
       file_ext: ext.replace(/^\./, ""),
       drive_letter: drive,
       file_size_bytes: stat.size,
@@ -288,33 +311,35 @@ async function buildOwnedPlan(client, inputDir) {
   for (const filePath of recovery.files) {
     if (ownedPaths.has(path.resolve(filePath).toLowerCase())) continue;
     const match = matchMaster(path.basename(filePath), maps, true);
+    const master = match.master || missingMasterFromMatch(match);
     const stat = fs.statSync(filePath);
-    const actor = match.master ? cleanName(match.master.actor_name) : "";
-    const title = match.master ? cleanName(match.master.title) : "";
     const ext = path.extname(filePath).toLowerCase();
-    const newName = match.master ? `${match.master.movie_code}_${title}${actor ? `_${actor}` : ""}${ext}` : path.basename(filePath);
-    const baseTargetPath = path.join(targetDir, newName);
-    const samePath = path.resolve(baseTargetPath).toLowerCase() === path.resolve(filePath).toLowerCase();
-    const targetPath = samePath ? baseTargetPath : uniqueTargetPath(targetDir, newName, reservedTargets);
-    let status = match.master && stat.size > 0 ? "ready" : "recovery_not_matched";
-    if (match.master && fs.existsSync(targetPath) && !samePath) status = "target_exists";
+    const newName = master ? ownedFileName(master, ext) : "";
+    const baseTargetPath = master ? path.join(targetDir, newName) : "";
+    const samePath = master && path.resolve(baseTargetPath).toLowerCase() === path.resolve(filePath).toLowerCase();
+    const targetPath = master ? (samePath ? baseTargetPath : uniqueTargetPath(targetDir, newName, reservedTargets)) : "";
+    let status = master && stat.size > 0 ? "ready" : "recovery_not_matched";
+    if (master && fs.existsSync(targetPath) && !samePath) status = "target_exists";
     rows.push({
       status: samePath && status === "ready" ? "ready_recover_owned" : status,
-      operation: samePath ? "register_owned_only" : "rename_move_register",
-      movie_code: match.master?.movie_code || "",
-      match_reason: match.reason,
+      operation: master ? (samePath ? "register_owned_only" : "rename_move_register") : "review_only",
+      movie_code: master?.movie_code || "",
+      match_reason: master?.needs_master_insert ? "code_without_master" : match.reason,
       candidates: match.candidates.join(" | "),
       source_path: filePath,
       target_path: targetPath,
       file_name: path.basename(filePath),
       new_file_name: newName,
+      new_master: master?.needs_master_insert ? "true" : "false",
+      master_relation_key: master?.needs_master_insert ? master.relation_key_mmddyy : "",
+      master_title: master?.needs_master_insert ? master.title : "",
       file_ext: ext.replace(/^\./, ""),
       drive_letter: drive,
       file_size_bytes: stat.size,
       file_mtime: stat.mtime.toISOString(),
       error: "",
     });
-    if (match.master) {
+    if (master) {
       reservedTargets.add(targetPath.toLowerCase());
       targetCounts.set(targetPath.toLowerCase(), (targetCounts.get(targetPath.toLowerCase()) || 0) + 1);
     }
@@ -323,7 +348,7 @@ async function buildOwnedPlan(client, inputDir) {
     if (!["ready", "ready_recover_owned"].includes(row.status)) continue;
     if ((targetCounts.get(row.target_path.toLowerCase()) || 0) > 1) row.status = "duplicate_target_path";
   }
-  for (const error of scan.errors) rows.push({ status: "scan_error", operation: "", movie_code: "", match_reason: "", candidates: "", source_path: error.path, target_path: "", file_name: "", new_file_name: "", file_ext: "", drive_letter: drive, file_size_bytes: "", file_mtime: "", error: error.error });
+  for (const error of scan.errors) rows.push({ status: "scan_error", operation: "", movie_code: "", match_reason: "", candidates: "", source_path: error.path, target_path: "", file_name: "", new_file_name: "", new_master: "false", master_relation_key: "", master_title: "", file_ext: "", drive_letter: drive, file_size_bytes: "", file_mtime: "", error: error.error });
   return rows;
 }
 
@@ -410,7 +435,7 @@ async function readApprovedPlan(planCsv, mode, inputDir = "", client = null) {
       if (!isUnderDirectory(row.target_path, targetDirForDrive(sourceDrive))) throw new Error(`Invalid owned target path: ${row.target_path}`);
       const expected = expectedBySource.get(path.resolve(row.source_path).toLowerCase());
       if (!expected) throw new Error(`Owned row is no longer valid: ${row.source_path}`);
-      assertSamePlanRow(row, expected, ["status", "operation", "movie_code", "match_reason", "candidates", "target_path", "new_file_name", "file_ext", "drive_letter", "file_size_bytes", "file_mtime"]);
+      assertSamePlanRow(row, expected, ["status", "operation", "movie_code", "match_reason", "candidates", "target_path", "new_file_name", "new_master", "master_relation_key", "master_title", "file_ext", "drive_letter", "file_size_bytes", "file_mtime"]);
     }
   }
   return rows;
@@ -458,10 +483,20 @@ async function applyOwned(client, rows) {
   const manifestPath = writeCsv(rows, path.resolve(__dirname, "..", "..", "storage", "exports", SOURCE), "owned-apply-recovery-manifest");
   let moved = 0;
   let registered = 0;
+  let mastersInserted = 0;
   const movedRows = [];
   await client.query("begin");
   try {
     for (const row of rows) {
+      if (row.new_master === "true") {
+        if (!row.master_relation_key || !row.master_title) throw new Error(`New master fields are missing: ${row.source_path}`);
+        const result = await client.query(`insert into cl.${DB_PREFIX}_m004_master
+          (movie_code,relation_key_mmddyy,title,channel_name,review_status,note)
+          values ($1,$2,$3,'HEYZO','owned_file_added','Added from explicit owned filename')
+          on conflict (movie_code) do nothing`,
+        [row.movie_code, row.master_relation_key, row.master_title]);
+        mastersInserted += result.rowCount;
+      }
       if (row.operation !== "register_owned_only") {
         fs.mkdirSync(path.dirname(row.target_path), { recursive: true });
         fs.renameSync(row.source_path, row.target_path);
@@ -484,7 +519,7 @@ async function applyOwned(client, rows) {
     }
     throw error;
   }
-  return { moved, registered, recovery_manifest_path: manifestPath };
+  return { moved, registered, masters_inserted: mastersInserted, recovery_manifest_path: manifestPath };
 }
 
 async function main() {

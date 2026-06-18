@@ -46,6 +46,33 @@ const SOURCE_CONFIGS = {
     ownedTable: "cl.onepondo_owned_file",
     videoMetadataTable: "cl.onepondo_owned_file_video_metadata",
   },
+  h0930: {
+    source: "h0930",
+    siteCode: "h0930",
+    libraryView: "cl.h0930_v_library_items",
+    completionView: "cl.h0930_v_completion_items",
+    thumbnailTable: "cl.h0930_v_thumbnail_assets",
+    ownedTable: "cl.h0930_owned_file",
+    videoMetadataTable: "cl.h0930_owned_file_video_metadata",
+  },
+  carib: {
+    source: "carib",
+    siteCode: "carib",
+    libraryView: "cl.carib_v_library_items",
+    completionView: "cl.carib_v_completion_items",
+    thumbnailTable: "cl.carib_v_thumbnail_assets",
+    ownedTable: "cl.carib_owned_file",
+    videoMetadataTable: "cl.carib_owned_file_video_metadata",
+  },
+  tokyo_hot: {
+    source: "tokyo_hot",
+    siteCode: "tokyo_hot",
+    libraryView: "cl.tokyo_hot_v_library_items",
+    completionView: "cl.tokyo_hot_v_completion_items",
+    thumbnailTable: "cl.tokyo_hot_v_thumbnail_assets",
+    ownedTable: "cl.tokyo_hot_owned_file",
+    videoMetadataTable: "cl.tokyo_hot_owned_file_video_metadata",
+  },
 };
 
 function getSourceConfig(source) {

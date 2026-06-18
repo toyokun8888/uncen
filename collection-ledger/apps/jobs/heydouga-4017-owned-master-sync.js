@@ -11,6 +11,7 @@ const DEFAULT_ROOTS = [
   "H:\\uncen\\heydouga_4017",
   "K:\\uncen\\heydouga_4017",
   "N:\\uncen\\heydouga_4017",
+  "Q:\\uncen\\heydouga_4017",
 ];
 const VIDEO_EXTENSIONS = new Set([".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpg", ".mpeg", ".ts", ".wmv"]);
 const SQL_PATH = path.resolve(__dirname, "..", "..", "ops", "sql", "080_heydouga_4017_owned_file.sql");

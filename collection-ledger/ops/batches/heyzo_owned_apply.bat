@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d C:\uncen\collection-ledger
-node apps\jobs\heyzo-owned-operations.js --step owned-review --input-dir "%~dp0" --env-file C:\Users\toyoaki\Desktop\filedatachange\.env
+node apps\jobs\heyzo-owned-operations.js --step owned-review --input-dir "%~dp0." --env-file C:\Users\toyoaki\Desktop\filedatachange\.env
 if errorlevel 1 goto :failed
 set "PLAN="
 for /f "delims=" %%F in ('dir /b /o-d "%~dp0heyzo_owned-review_*.csv"') do if not defined PLAN set "PLAN=%~dp0%%F"
@@ -9,7 +9,13 @@ if not defined PLAN goto :failed
 echo Review CSV: %PLAN%
 choice /c YN /n /m "Apply this reviewed HEYZO owned-file plan? [Y/N] "
 if errorlevel 2 goto :cancelled
-node apps\jobs\heyzo-owned-operations.js --step owned-apply --input-dir "%~dp0" --plan-csv "%PLAN%" --env-file C:\Users\toyoaki\Desktop\filedatachange\.env
+node apps\jobs\heyzo-owned-operations.js --step owned-ready-plan --input-dir "%~dp0." --plan-csv "%PLAN%" --env-file C:\Users\toyoaki\Desktop\filedatachange\.env
+if errorlevel 1 goto :failed
+set "READY_PLAN="
+for /f "delims=" %%F in ('dir /b /o-d "%~dp0heyzo_owned-ready-plan_*.csv"') do if not defined READY_PLAN set "READY_PLAN=%~dp0%%F"
+if not defined READY_PLAN goto :failed
+echo Ready CSV: %READY_PLAN%
+node apps\jobs\heyzo-owned-operations.js --step owned-apply --input-dir "%~dp0." --plan-csv "%READY_PLAN%" --env-file C:\Users\toyoaki\Desktop\filedatachange\.env
 if errorlevel 1 goto :failed
 echo HEYZO owned import completed.
 pause

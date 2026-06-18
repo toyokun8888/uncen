@@ -31,6 +31,21 @@ const SOURCE_CONFIGS = {
     metadataTable: "cl.onepondo_owned_file_video_metadata",
     initSqlPaths: ["110_1pondo_site.sql"],
   },
+  h0930: {
+    ownedTable: "cl.h0930_owned_file",
+    metadataTable: "cl.h0930_owned_file_video_metadata",
+    initSqlPaths: ["120_h0930_site.sql"],
+  },
+  carib: {
+    ownedTable: "cl.carib_owned_file",
+    metadataTable: "cl.carib_owned_file_video_metadata",
+    initSqlPaths: ["130_carib_site.sql"],
+  },
+  tokyo_hot: {
+    ownedTable: "cl.tokyo_hot_owned_file",
+    metadataTable: "cl.tokyo_hot_owned_file_video_metadata",
+    initSqlPaths: ["140_tokyo_hot_site.sql"],
+  },
 };
 
 function parseArgs(argv) {
@@ -235,7 +250,14 @@ function normalizeWindowsPath(targetPath) {
 
 function resolveAllowedRoots() {
   const raw = (process.env.MEDIA_ALLOWED_ROOTS || "").trim();
-  const defaultRoots = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P"].map((drive) => `${drive}:\\uncen`);
+  const defaultRoots = [
+    ...["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"].map((drive) => `${drive}:\\uncen`),
+    "G:\\all\\お気に入りD(F)\\新規DL\\月極\\東熱",
+    "N:\\NEWRG\\4K_TokyoHot",
+    "L:\\all\\LONG\\Tokyo-Hot-n0001-500",
+    "N:\\25.12\\newtokyohot\\N",
+    "H:\\all\\保存\\2020.01.06\\月極\\カリビアン",
+  ];
   if (raw) {
     const configuredRoots = raw
       .split(";")

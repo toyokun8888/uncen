@@ -4,9 +4,11 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const SOURCE = "10musume";
-const DB_PREFIX = "tenmusume";
-const SEARCH_TEXT = "10mu";
+const SOURCE = "carib";
+const EXPORT_PREFIX = "carib_manko_zukan";
+const DB_PREFIX = "carib";
+const SEARCH_TEXT = "carib";
+const EXCEPTION_DIR = "H:\\all\\保存\\2020.01.06\\月極\\マンコ図鑑";
 const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"];
 const VIDEO_EXTENSIONS = new Set([".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpg", ".mpeg", ".ts", ".wmv"]);
 
@@ -54,9 +56,7 @@ function runVideoMetadataCollect(envFile) {
     encoding: "utf8",
     windowsHide: true,
   });
-  if (result.status !== 0) {
-    throw new Error(`video metadata collect failed: ${result.stderr || result.stdout}`);
-  }
+  if (result.status !== 0) throw new Error(`video metadata collect failed: ${result.stderr || result.stdout}`);
   const output = String(result.stdout || "").trim();
   const jsonStart = output.indexOf("{");
   return jsonStart >= 0 ? JSON.parse(output.slice(jsonStart)) : {};
@@ -85,9 +85,7 @@ function createPgClient() {
   };
   if (!connectionString) {
     for (const [name, keys] of [["database", databaseKeys], ["user", userKeys], ["password", passwordKeys]]) {
-      if (config[name] === undefined) {
-        throw new Error(`Database ${name} is missing. Tried: ${keys.join(", ")} in --env-file or process environment.`);
-      }
+      if (config[name] === undefined) throw new Error(`Database ${name} is missing. Tried: ${keys.join(", ")} in --env-file or process environment.`);
     }
   }
   return new Client(config);
@@ -127,15 +125,140 @@ function uniqueTargetPath(targetDir, fileName, reserved = new Set()) {
   let candidate = path.join(targetDir, fileName);
   let counter = 1;
   while (fs.existsSync(candidate) || reserved.has(candidate.toLowerCase())) {
-    candidate = path.join(targetDir, `${parsed.name} (${counter})${parsed.ext}`);
+    candidate = path.join(targetDir, `${parsed.name}(${counter})${parsed.ext}`);
     counter += 1;
   }
   return candidate;
 }
 
+function candidateCodes(fileName, allowRenamed = false) {
+  const stem = path.parse(fileName).name;
+  const lower = stem.toLowerCase();
+  const hasCode = /[0-9]{6}[-_][0-9A-Za-z]{3}(?![0-9A-Za-z])/.test(stem);
+  if (!lower.includes("carib") && !allowRenamed && !hasCode) return [];
+  const result = [];
+  const exactPrefix = allowRenamed ? stem.match(/^([0-9]{6})[-_]([0-9A-Za-z]{3})(?:_|$)/) : null;
+  if (exactPrefix) result.push(`${exactPrefix[1]}-${exactPrefix[2]}`);
+  for (const match of stem.matchAll(/([0-9]{6})[-_]([0-9A-Za-z]{3})(?![0-9A-Za-z])/g)) {
+    result.push(`${match[1]}-${match[2]}`);
+  }
+  return [...new Set(result.map((item) => item.toLowerCase()))];
+}
+
+function normalizeMovieCode(value) {
+  const match = String(value || "").match(/([0-9]{6})[-_]([0-9A-Za-z]{3})(?![0-9A-Za-z])/);
+  return match ? `${match[1]}-${match[2]}`.toLowerCase() : "";
+}
+
+function parseExceptionDate(fileName) {
+  const stem = path.parse(fileName).name;
+  const patterns = [
+    /^([0-9]{4})\.([0-9]{2})\.([0-9]{2})\s*(.+)$/,
+    /^([0-9]{4})\.([0-9]{1,2})\.([0-9]{1,2})\s*(.+)$/,
+    /^([0-9]{4})\.?\s*([0-9]{2})([0-9]{2})\s*(.+)$/,
+  ];
+  for (const pattern of patterns) {
+    const match = stem.match(pattern);
+    if (!match) continue;
+    const year = match[1];
+    const month = match[2].padStart(2, "0");
+    const day = match[3].padStart(2, "0");
+    const releaseDate = `${year}-${month}-${day}`;
+    const maxDay = new Date(Number(year), Number(month), 0).getDate();
+    if (Number(month) < 1 || Number(month) > 12 || Number(day) < 1 || Number(day) > maxDay) continue;
+    return { releaseDate, titleText: cleanName(match[4]) };
+  }
+  return { releaseDate: "", titleText: cleanName(stem) };
+}
+
+function normalizeForScore(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKC")
+    .replace(/[【】\[\]（）()「」『』~〜・,、。.!！?？:：;；_\-‐‑–—―/\\|"'`´\s]/g, "");
+}
+
+function bigrams(value) {
+  const text = normalizeForScore(value);
+  if (text.length <= 1) return text ? [text] : [];
+  const items = [];
+  for (let i = 0; i < text.length - 1; i += 1) items.push(text.slice(i, i + 2));
+  return items;
+}
+
+function similarity(left, right) {
+  const a = bigrams(left);
+  const b = bigrams(right);
+  if (!a.length || !b.length) return 0;
+  const counts = new Map();
+  for (const item of a) counts.set(item, (counts.get(item) || 0) + 1);
+  let intersection = 0;
+  for (const item of b) {
+    const count = counts.get(item) || 0;
+    if (count > 0) {
+      intersection += 1;
+      counts.set(item, count - 1);
+    }
+  }
+  return (2 * intersection) / (a.length + b.length);
+}
+
+async function fetchMasterMap(client) {
+  const result = await client.query(`select movie_code, relation_key_mmddyy, to_char(release_date, 'YYYY-MM-DD') release_date_key, title, coalesce(actor_name,'') actor_name from cl.${DB_PREFIX}_m007_master`);
+  const exact = new Map(result.rows.map((row) => [row.movie_code.toLowerCase(), row]));
+  const relation = new Map();
+  const byDate = new Map();
+  for (const row of result.rows) {
+    const relationItems = relation.get(row.relation_key_mmddyy) || [];
+    relationItems.push(row);
+    relation.set(row.relation_key_mmddyy, relationItems);
+    const dateKey = row.release_date_key || "";
+    if (dateKey) {
+      const dateItems = byDate.get(dateKey) || [];
+      dateItems.push(row);
+      byDate.set(dateKey, dateItems);
+    }
+  }
+  return { exact, relation, byDate };
+}
+
+function matchMaster(fileName, maps, allowRenamed = false) {
+  const candidates = candidateCodes(fileName, allowRenamed);
+  const exactMatches = [...new Map(candidates
+    .map((candidate) => maps.exact.get(candidate.toLowerCase()))
+    .filter(Boolean)
+    .map((master) => [master.movie_code, master])).values()];
+  if (exactMatches.length === 1) return { master: exactMatches[0], candidates, reason: "exact" };
+  if (exactMatches.length > 1) return { master: null, candidates, reason: "multiple_exact_matches" };
+  return { master: null, candidates, reason: candidates.length ? "explicit_code_not_matched" : "not_matched" };
+}
+
+function matchExceptionMaster(fileName, maps) {
+  const parsed = parseExceptionDate(fileName);
+  if (!parsed.releaseDate) return { master: null, releaseDate: "", titleText: parsed.titleText, score: 0, reason: "date_unreadable", candidateCount: 0, runnerUpScore: 0 };
+  const candidates = maps.byDate.get(parsed.releaseDate) || [];
+  if (!candidates.length) return { master: null, releaseDate: parsed.releaseDate, titleText: parsed.titleText, score: 0, reason: "date_not_matched", candidateCount: 0, runnerUpScore: 0 };
+  const ranked = candidates
+    .map((master) => ({
+      master,
+      score: similarity(parsed.titleText, `${master.title} ${master.actor_name || ""}`),
+    }))
+    .sort((a, b) => b.score - a.score || a.master.movie_code.localeCompare(b.master.movie_code));
+  const best = ranked[0];
+  const runnerUpScore = ranked[1]?.score || 0;
+  if (candidates.length === 1 && best.score >= 0.25) {
+    return { master: best.master, releaseDate: parsed.releaseDate, titleText: parsed.titleText, score: best.score, reason: "date_unique_title_match", candidateCount: candidates.length, runnerUpScore };
+  }
+  if (best.score >= 0.5 && best.score - runnerUpScore >= 0.1) {
+    return { master: best.master, releaseDate: parsed.releaseDate, titleText: parsed.titleText, score: best.score, reason: "date_title_similarity", candidateCount: candidates.length, runnerUpScore };
+  }
+  return { master: null, releaseDate: parsed.releaseDate, titleText: parsed.titleText, score: best.score, reason: "needs_review_similarity", candidateCount: candidates.length, runnerUpScore };
+}
+
 function buildCollectPlan() {
   const rows = [];
   const plannedTargets = new Set();
+  const exceptionRoot = path.resolve(EXCEPTION_DIR).toLowerCase();
   for (const drive of DRIVES) {
     const root = `${drive}:\\`;
     const targetDir = targetDirForDrive(drive);
@@ -144,9 +267,10 @@ function buildCollectPlan() {
     const scan = listFiles(
       root,
       (filePath) => isVideo(filePath) && path.basename(filePath).toLowerCase().includes(SEARCH_TEXT),
-      [targetDir, inputDir, trashDir, `${drive}:\\System Volume Information`, `${drive}:\\$RECYCLE.BIN`]
+      [targetDir, inputDir, trashDir, EXCEPTION_DIR, `${drive}:\\System Volume Information`, `${drive}:\\$RECYCLE.BIN`]
     );
     for (const filePath of scan.files) {
+      if (path.resolve(filePath).toLowerCase().startsWith(exceptionRoot)) continue;
       const stat = fs.statSync(filePath);
       const targetPath = uniqueTargetPath(targetDir, path.basename(filePath), plannedTargets);
       const targetKey = targetPath.toLowerCase();
@@ -167,56 +291,6 @@ function buildCollectPlan() {
     for (const error of scan.errors) rows.push({ status: "scan_error", operation: "", movie_code: "", source_path: error.path, target_path: "", file_name: "", drive_letter: drive, error: error.error });
   }
   return rows;
-}
-
-function candidateCodes(fileName, allowRenamed = false) {
-  const stem = path.parse(fileName).name;
-  const lower = stem.toLowerCase();
-  if (!lower.includes("10mu") && !allowRenamed) return [];
-  const result = [];
-  const exactPrefix = allowRenamed ? stem.match(/^([0-9]{6}_[0-9]{1,2})(?:_|$)/) : null;
-  if (exactPrefix) result.push(exactPrefix[1]);
-  for (const match of stem.matchAll(/([0-9]{6})[_-]([0-9]{1,2})(?![0-9A-Za-z])/g)) {
-    result.push(`${match[1]}_${String(Number(match[2])).padStart(2, "0")}`);
-  }
-  for (const match of stem.matchAll(/([0-9]{6})[_-]([0-9]{1,2})(?=[_-](?:10mu|10musume)(?:[_-]|$))/gi)) {
-    result.push(`${match[1]}_${String(Number(match[2])).padStart(2, "0")}`);
-  }
-  for (const match of stem.matchAll(/([0-9]{6})/g)) {
-    result.push(match[1]);
-  }
-  return [...new Set(result)];
-}
-
-async function fetchMasterMap(client) {
-  const result = await client.query(`select movie_code, relation_key_mmddyy, title, coalesce(actor_name,'') actor_name from cl.${DB_PREFIX}_m003_master`);
-  const exact = new Map(result.rows.map((row) => [row.movie_code.toLowerCase(), row]));
-  const relation = new Map();
-  for (const row of result.rows) {
-    const items = relation.get(row.relation_key_mmddyy) || [];
-    items.push(row);
-    relation.set(row.relation_key_mmddyy, items);
-  }
-  return { exact, relation };
-}
-
-function matchMaster(fileName, maps, allowRenamed = false) {
-  const candidates = candidateCodes(fileName, allowRenamed);
-  const hasExplicitBranch = candidates.some((item) => /^[0-9]{6}_[0-9A-Za-z]+$/.test(item));
-  const exactMatches = [...new Map(candidates
-    .map((candidate) => maps.exact.get(candidate.toLowerCase()))
-    .filter(Boolean)
-    .map((master) => [master.movie_code, master])).values()];
-  if (exactMatches.length === 1) return { master: exactMatches[0], candidates, reason: "exact" };
-  if (exactMatches.length > 1) return { master: null, candidates, reason: "multiple_exact_matches" };
-  if (hasExplicitBranch) return { master: null, candidates, reason: "explicit_branch_not_matched" };
-  const dateCandidates = candidates.filter((item) => /^[0-9]{6}$/.test(item));
-  const relationMatches = [...new Map(dateCandidates
-    .flatMap((candidate) => maps.relation.get(candidate) || [])
-    .map((master) => [master.movie_code, master])).values()];
-  if (relationMatches.length === 1) return { master: relationMatches[0], candidates, reason: "relation_unique" };
-  if (relationMatches.length > 1) return { master: null, candidates, reason: "relation_ambiguous" };
-  return { master: null, candidates, reason: "not_matched" };
 }
 
 async function buildOwnedPlan(client, inputDir) {
@@ -258,6 +332,8 @@ async function buildOwnedPlan(client, inputDir) {
       drive_letter: drive,
       file_size_bytes: stat.size,
       file_mtime: stat.mtime.toISOString(),
+      source_type: "normal",
+      match_score: "",
       error: "",
     });
     if (master) {
@@ -299,25 +375,62 @@ async function buildOwnedPlan(client, inputDir) {
       drive_letter: drive,
       file_size_bytes: stat.size,
       file_mtime: stat.mtime.toISOString(),
+      source_type: samePath ? "recovery" : "normal",
+      match_score: "",
       error: "",
     });
-    if (match.master) {
-      reservedTargets.add(targetPath.toLowerCase());
-      targetCounts.set(targetPath.toLowerCase(), (targetCounts.get(targetPath.toLowerCase()) || 0) + 1);
-    }
+    if (match.master) reservedTargets.add(targetPath.toLowerCase());
   }
-  for (const row of rows) {
-    if (!["ready", "ready_recover_owned"].includes(row.status)) continue;
-    if ((targetCounts.get(row.target_path.toLowerCase()) || 0) > 1) row.status = "duplicate_target_path";
+  for (const error of scan.errors) rows.push({ status: "scan_error", operation: "", movie_code: "", match_reason: "", candidates: "", source_path: error.path, target_path: "", file_name: "", new_file_name: "", file_ext: "", drive_letter: drive, file_size_bytes: "", file_mtime: "", source_type: "normal", match_score: "", error: error.error });
+  return rows;
+}
+
+async function buildExceptionPlan(client) {
+  const maps = await fetchMasterMap(client);
+  const ownedResult = await client.query(`select lower(file_path) file_path from cl.${DB_PREFIX}_owned_file`);
+  const ownedPaths = new Set(ownedResult.rows.map((row) => row.file_path));
+  const scan = listFiles(EXCEPTION_DIR, isVideo);
+  const rows = [];
+  for (const filePath of scan.files) {
+    const stat = fs.statSync(filePath);
+    const match = matchExceptionMaster(path.basename(filePath), maps);
+    let status = match.master ? "ready_exception" : match.reason;
+    if (!stat.size) status = "invalid_video_file";
+    if (ownedPaths.has(path.resolve(filePath).toLowerCase())) status = "already_owned";
+    rows.push({
+      status,
+      operation: match.master ? "register_owned_only" : "review_only",
+      movie_code: match.master?.movie_code || "",
+      match_reason: match.reason,
+      release_date: match.releaseDate,
+      title_text: match.titleText,
+      master_title: match.master?.title || "",
+      master_actor: match.master?.actor_name || "",
+      candidate_count: match.candidateCount,
+      match_score: match.score ? match.score.toFixed(4) : "",
+      runner_up_score: match.runnerUpScore ? match.runnerUpScore.toFixed(4) : "",
+      manual_movie_code: "",
+      review_status: "",
+      source_path: filePath,
+      target_path: filePath,
+      file_name: path.basename(filePath),
+      new_file_name: "",
+      file_ext: path.extname(filePath).toLowerCase().replace(/^\./, ""),
+      drive_letter: driveOf(filePath),
+      file_size_bytes: stat.size,
+      file_mtime: stat.mtime.toISOString(),
+      source_type: "exception_folder",
+      error: "",
+    });
   }
-  for (const error of scan.errors) rows.push({ status: "scan_error", operation: "", movie_code: "", match_reason: "", candidates: "", source_path: error.path, target_path: "", file_name: "", new_file_name: "", file_ext: "", drive_letter: drive, file_size_bytes: "", file_mtime: "", error: error.error });
+  for (const error of scan.errors) rows.push({ status: "scan_error", operation: "", movie_code: "", match_reason: "", release_date: "", title_text: "", manual_movie_code: "", review_status: "", source_path: error.path, target_path: "", file_name: "", new_file_name: "", file_ext: "", drive_letter: "H", file_size_bytes: "", file_mtime: "", source_type: "exception_folder", match_score: "", error: error.error });
   return rows;
 }
 
 function writeCsv(rows, outputDir, label) {
   fs.mkdirSync(outputDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
-  const outputPath = path.join(outputDir, `${SOURCE}_${label}_${stamp}.csv`);
+  const outputPath = path.join(outputDir, `${EXPORT_PREFIX}_${label}_${stamp}.csv`);
   const columns = [...new Set(rows.flatMap(Object.keys))];
   const escape = (value) => { const raw = String(value ?? ""); return /[",\r\n]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw; };
   const lines = [columns.join(","), ...rows.map((row) => columns.map((column) => escape(row[column])).join(","))];
@@ -355,45 +468,75 @@ function isUnderDirectory(filePath, directory) {
 
 function assertSamePlanRow(row, expected, columns) {
   for (const column of columns) {
-    if (String(row[column] || "") !== String(expected[column] || "")) {
-      throw new Error(`Plan CSV ${column} changed for ${row.source_path}`);
-    }
+    if (String(row[column] || "") !== String(expected[column] || "")) throw new Error(`Plan CSV ${column} changed for ${row.source_path}`);
   }
+}
+
+function canManuallyApproveExceptionStatus(status) {
+  return ["needs_review_similarity", "date_not_matched", "date_unreadable"].includes(status);
+}
+
+async function assertMasterExists(client, movieCode) {
+  const result = await client.query(`select 1 from cl.${DB_PREFIX}_m007_master where movie_code=$1`, [movieCode]);
+  if (!result.rowCount) throw new Error(`Manual movie_code is not in master: ${movieCode}`);
 }
 
 async function readApprovedPlan(planCsv, mode, inputDir = "", client = null) {
   if (!planCsv) throw new Error("--plan-csv is required for apply");
   const rows = parseCsv(fs.readFileSync(path.resolve(planCsv), "utf8"));
   let expectedRows = [];
-  if (mode === "master-complement") expectedRows = await buildMissingMasterPlan(client);
+  if (mode === "collect") expectedRows = buildCollectPlan();
   else if (mode === "owned") expectedRows = await buildOwnedPlan(client, inputDir);
+  else if (mode === "exception") expectedRows = await buildExceptionPlan(client);
   const expectedBySource = new Map(expectedRows.map((row) => [path.resolve(row.source_path).toLowerCase(), row]));
   const targetPaths = new Set();
   for (const row of rows) {
-    if (!["ready", "ready_recover_owned"].includes(row.status)) throw new Error(`Plan CSV contains unsafe row: ${row.status}`);
+    const exceptionManualApproval = mode === "exception" &&
+      row.review_status === "approved" &&
+      normalizeMovieCode(row.manual_movie_code) &&
+      canManuallyApproveExceptionStatus(row.status);
+    if (!["ready", "ready_recover_owned", "ready_exception"].includes(row.status) && !exceptionManualApproval) throw new Error(`Plan CSV contains unsafe row: ${row.status}`);
     const stat = fs.statSync(row.source_path);
     if (!stat.isFile() || stat.size <= 0) throw new Error(`Source file changed or is invalid: ${row.source_path}`);
     if (Number(row.file_size_bytes || stat.size) !== stat.size) throw new Error(`Source file size changed: ${row.source_path}`);
     if (row.file_mtime && new Date(row.file_mtime).getTime() !== stat.mtime.getTime()) throw new Error(`Source file mtime changed: ${row.source_path}`);
     const sourceDrive = driveOf(row.source_path);
-    if (mode === "master-complement") {
-      if (row.status !== "ready" || !/^[0-9]{6}_[0-9]{2}$/.test(row.movie_code)) throw new Error(`Invalid master complement row: ${row.source_path}`);
-      if (!DRIVES.includes(sourceDrive) || row.drive_letter !== sourceDrive) throw new Error(`Invalid drive mapping: ${row.source_path}`);
-      if (!isUnderDirectory(row.source_path, targetDirForDrive(sourceDrive))) throw new Error(`Invalid master complement source path: ${row.source_path}`);
-      const expected = expectedBySource.get(path.resolve(row.source_path).toLowerCase());
-      if (!expected) throw new Error(`Master complement row is no longer valid: ${row.source_path}`);
-      assertSamePlanRow(row, expected, ["status", "movie_code", "relation_key_mmddyy", "release_date", "title", "drive_letter", "file_size_bytes", "file_mtime"]);
+    if (!DRIVES.includes(sourceDrive) || row.drive_letter !== sourceDrive) throw new Error(`Invalid drive mapping: ${row.source_path}`);
+    const expected = expectedBySource.get(path.resolve(row.source_path).toLowerCase());
+    if (!expected) throw new Error(`Plan row is no longer valid: ${row.source_path}`);
+    if (mode === "exception") {
+      const manualMovieCode = normalizeMovieCode(row.manual_movie_code);
+      const manuallyApproved = row.review_status === "approved" && manualMovieCode && canManuallyApproveExceptionStatus(expected.status);
+      if (manuallyApproved) {
+        row.status = "ready_exception";
+        row.operation = "register_owned_only";
+        row.movie_code = manualMovieCode;
+        row.target_path = row.source_path;
+        row.source_type = "exception_folder";
+        row.match_reason = `manual_approved:${expected.match_reason || row.match_reason || "review"}`;
+      }
+      if (row.operation !== "register_owned_only" || row.source_type !== "exception_folder") throw new Error(`Invalid exception row: ${row.source_path}`);
+      if (row.status !== "ready_exception" || !row.movie_code) throw new Error(`Exception row is not approved: ${row.source_path}`);
+      if (!isUnderDirectory(row.source_path, EXCEPTION_DIR) || path.resolve(row.source_path).toLowerCase() !== path.resolve(row.target_path).toLowerCase()) throw new Error(`Invalid exception paths: ${row.source_path}`);
+      if (expected.status === "ready_exception") {
+        assertSamePlanRow(row, expected, ["status", "operation", "movie_code", "match_reason", "release_date", "target_path", "file_name", "file_ext", "drive_letter", "file_size_bytes", "file_mtime", "source_type"]);
+      } else {
+        if (!manuallyApproved) throw new Error(`Exception row requires manual approval: ${row.source_path}`);
+        assertSamePlanRow(row, expected, ["release_date", "target_path", "file_name", "file_ext", "drive_letter", "file_size_bytes", "file_mtime", "source_type"]);
+        await assertMasterExists(client, row.movie_code);
+      }
       continue;
     }
     if (row.operation !== "register_owned_only" && fs.existsSync(row.target_path)) throw new Error(`Target now exists: ${row.target_path}`);
     const targetDrive = driveOf(row.target_path);
-    if (!DRIVES.includes(sourceDrive) || sourceDrive !== targetDrive || row.drive_letter !== sourceDrive) throw new Error(`Invalid drive mapping: ${row.source_path}`);
+    if (sourceDrive !== targetDrive) throw new Error(`Invalid drive mapping: ${row.source_path}`);
     const targetKey = path.resolve(row.target_path).toLowerCase();
     if (targetPaths.has(targetKey)) throw new Error(`Duplicate target in plan CSV: ${row.target_path}`);
     targetPaths.add(targetKey);
     if (mode === "collect") {
       if (row.operation !== "collect" || row.movie_code) throw new Error(`Invalid collect row: ${row.source_path}`);
       if (!isUnderDirectory(row.source_path, `${sourceDrive}:\\`) || !isUnderDirectory(row.target_path, targetDirForDrive(sourceDrive))) throw new Error(`Invalid collect paths: ${row.source_path}`);
+      assertSamePlanRow(row, expected, ["status", "operation", "target_path", "file_name", "drive_letter", "file_size_bytes", "file_mtime"]);
     } else {
       if (!["rename_move_register", "register_owned_only"].includes(row.operation) || !row.movie_code) throw new Error(`Invalid owned row: ${row.source_path}`);
       const expectedInput = path.resolve(inputDirForDrive(sourceDrive));
@@ -401,8 +544,6 @@ async function readApprovedPlan(planCsv, mode, inputDir = "", client = null) {
       if (row.operation === "rename_move_register" && !isUnderDirectory(row.source_path, expectedInput) && !isUnderDirectory(row.source_path, targetDirForDrive(sourceDrive))) throw new Error(`Invalid owned source path: ${row.source_path}`);
       if (row.operation === "register_owned_only" && !isUnderDirectory(row.source_path, targetDirForDrive(sourceDrive))) throw new Error(`Invalid recovery source path: ${row.source_path}`);
       if (!isUnderDirectory(row.target_path, targetDirForDrive(sourceDrive))) throw new Error(`Invalid owned target path: ${row.target_path}`);
-      const expected = expectedBySource.get(path.resolve(row.source_path).toLowerCase());
-      if (!expected) throw new Error(`Owned row is no longer valid: ${row.source_path}`);
       assertSamePlanRow(row, expected, ["status", "operation", "movie_code", "match_reason", "candidates", "target_path", "new_file_name", "file_ext", "drive_letter", "file_size_bytes", "file_mtime"]);
     }
   }
@@ -413,70 +554,6 @@ function summarize(rows) {
   const byStatus = {};
   for (const row of rows) byStatus[row.status] = (byStatus[row.status] || 0) + 1;
   return { total: rows.length, by_status: byStatus };
-}
-
-function releaseDateFromCode(movieCode) {
-  const match = String(movieCode || "").match(/^([0-9]{2})([0-9]{2})([0-9]{2})_/);
-  if (!match) return null;
-  const value = `20${match[3]}-${match[1]}-${match[2]}`;
-  const date = new Date(`${value}T00:00:00Z`);
-  return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value ? null : value;
-}
-
-async function buildMissingMasterPlan(client) {
-  const maps = await fetchMasterMap(client);
-  const rows = [];
-  const seen = new Set();
-  for (const drive of DRIVES) {
-    const scan = listFiles(targetDirForDrive(drive), isVideo);
-    for (const filePath of scan.files) {
-      const candidates = candidateCodes(path.basename(filePath), true);
-      const explicitCodes = [...new Set(candidates.filter((value) => /^[0-9]{6}_[0-9]{2}$/.test(value)))];
-      if (explicitCodes.length !== 1) continue;
-      const explicitCode = explicitCodes[0];
-      if (!explicitCode || maps.exact.has(explicitCode.toLowerCase()) || seen.has(explicitCode)) continue;
-      seen.add(explicitCode);
-      const stem = path.parse(filePath).name;
-      const stat = fs.statSync(filePath);
-      const releaseDate = releaseDateFromCode(explicitCode);
-      rows.push({
-        status: releaseDate ? "ready" : "invalid_movie_code_date",
-        movie_code: explicitCode,
-        relation_key_mmddyy: explicitCode.slice(0, 6),
-        release_date: releaseDate || "",
-        title: cleanName(stem),
-        source_path: filePath,
-        drive_letter: drive,
-        file_size_bytes: stat.size,
-        file_mtime: stat.mtime.toISOString(),
-      });
-    }
-  }
-  return rows;
-}
-
-async function applyMissingMasters(client, rows) {
-  const unsafe = rows.filter((row) => row.status !== "ready" || !/^[0-9]{6}_[0-9]{2}$/.test(row.movie_code));
-  if (unsafe.length) throw new Error(`Missing master plan has unsafe rows: ${unsafe.length}`);
-  await client.query("begin");
-  try {
-    let inserted = 0;
-    for (const row of rows) {
-      const detailUrl = `https://www.10musume.com/movies/${row.movie_code}/`;
-      const thumbnailUrl = `https://www.10musume.com/assets/sample/${row.movie_code}/list1.jpg`;
-      const result = await client.query(`insert into cl.${DB_PREFIX}_m003_master
-        (movie_code,relation_key_mmddyy,release_date,release_date_text,movie_code_suffix,title,channel_name,detail_url,thumbnail_url,review_status,note)
-        values ($1,$2,$3,$4,$5,$6,'10mu',$7,$8,'owned_file_added','Added from explicit owned filename after review')
-        on conflict (movie_code) do nothing`,
-      [row.movie_code, row.relation_key_mmddyy, row.release_date || null, row.release_date || null, row.movie_code.slice(7), row.title, detailUrl, thumbnailUrl]);
-      inserted += result.rowCount;
-    }
-    await client.query("commit");
-    return { inserted };
-  } catch (error) {
-    await client.query("rollback");
-    throw error;
-  }
 }
 
 function applyCollect(rows) {
@@ -490,7 +567,7 @@ function applyCollect(rows) {
 }
 
 async function applyOwned(client, rows) {
-  const unsafe = rows.filter((row) => !["ready", "ready_recover_owned"].includes(row.status));
+  const unsafe = rows.filter((row) => !["ready", "ready_recover_owned", "ready_exception"].includes(row.status));
   if (unsafe.length) throw new Error(`Owned import has unsafe rows: ${unsafe.length}`);
   let moved = 0;
   let registered = 0;
@@ -505,11 +582,13 @@ async function applyOwned(client, rows) {
         moved += 1;
       }
       const stat = fs.statSync(row.target_path);
-      await client.query(`insert into cl.${DB_PREFIX}_owned_file (movie_code,file_path,file_name,file_ext,drive_letter,file_size_bytes,file_mtime,last_seen_at,note)
-        values ($1,$2,$3,$4,$5,$6,$7,now(),'Imported by tenmusume-owned-operations')
+      await client.query(`insert into cl.${DB_PREFIX}_owned_file
+        (movie_code,file_path,file_name,file_ext,drive_letter,file_size_bytes,file_mtime,source_type,match_method,match_score,original_file_name,last_seen_at,note)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),'Imported by carib-manko-zukan-exception-operations')
         on conflict (file_path) do update set movie_code=excluded.movie_code,file_name=excluded.file_name,file_ext=excluded.file_ext,drive_letter=excluded.drive_letter,
-        file_size_bytes=excluded.file_size_bytes,file_mtime=excluded.file_mtime,last_seen_at=now(),updated_at=now()`,
-      [row.movie_code, row.target_path, path.basename(row.target_path), row.file_ext, row.drive_letter, stat.size, stat.mtime.toISOString()]);
+        file_size_bytes=excluded.file_size_bytes,file_mtime=excluded.file_mtime,source_type=excluded.source_type,match_method=excluded.match_method,
+        match_score=excluded.match_score,original_file_name=excluded.original_file_name,last_seen_at=now(),updated_at=now()`,
+      [row.movie_code, row.target_path, path.basename(row.target_path), row.file_ext, row.drive_letter, stat.size, stat.mtime.toISOString(), row.source_type || "normal", row.match_reason || null, row.match_score || null, row.file_name || null]);
       registered += 1;
     }
     await client.query("commit");
@@ -526,6 +605,9 @@ async function applyOwned(client, rows) {
 async function main() {
   const args = parseArgs(process.argv);
   loadEnvFile(args.envFile);
+  if (!["exception-review", "exception-ready-plan", "exception-apply"].includes(args.step)) {
+    throw new Error(`Unsupported step for manko-zukan exception job: ${args.step}`);
+  }
   if (args.step === "collect-review" || args.step === "collect-apply") {
     const rows = args.step === "collect-apply" ? await readApprovedPlan(args.planCsv, "collect") : buildCollectPlan();
     const outputPath = writeCsv(rows, path.resolve(__dirname, "..", "..", "storage", "exports", SOURCE), args.step);
@@ -533,41 +615,61 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, output_path: outputPath, summary: summarize(rows), result }, null, 2)}\n`);
     return;
   }
-  if (args.step === "master-complement-review" || args.step === "master-complement-apply") {
-    const client = createPgClient();
-    await client.connect();
-    try {
-      const rows = args.step === "master-complement-apply" ? await readApprovedPlan(args.planCsv, "master-complement", "", client) : await buildMissingMasterPlan(client);
-      const outputPath = writeCsv(rows, path.resolve(__dirname, "..", "..", "storage", "exports", SOURCE), args.step);
-      const result = args.step === "master-complement-apply" ? await applyMissingMasters(client, rows) : {};
-      process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, output_path: outputPath, summary: summarize(rows), result }, null, 2)}\n`);
-    } finally { await client.end(); }
-    return;
-  }
-  if (!args.inputDir) throw new Error("--input-dir is required");
-  if (args.step === "owned-ready-plan") {
-    if (!args.planCsv) throw new Error("--plan-csv is required");
-    const inputDir = path.resolve(args.inputDir);
-    const rows = parseCsv(fs.readFileSync(path.resolve(args.planCsv), "utf8"))
-      .filter((row) => ["ready", "ready_recover_owned"].includes(row.status));
-    for (const row of rows) {
-      if (!isUnderDirectory(row.source_path, inputDir) && !isUnderDirectory(row.source_path, targetDirForDrive(driveOf(inputDir)))) {
-        throw new Error(`Plan row does not match input directory: ${row.source_path}`);
-      }
-    }
-    const outputPath = writeCsv(rows, args.inputDir, args.step);
-    process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, input_dir: args.inputDir, output_path: outputPath, summary: summarize(rows), result: {} }, null, 2)}\n`);
-    return;
-  }
   const client = createPgClient();
   await client.connect();
   try {
+    if (args.step === "exception-ready-plan") {
+      if (!args.planCsv) throw new Error("--plan-csv is required");
+      const rows = parseCsv(fs.readFileSync(path.resolve(args.planCsv), "utf8"))
+        .filter((row) => row.status === "ready_exception" || (row.review_status === "approved" && normalizeMovieCode(row.manual_movie_code) && canManuallyApproveExceptionStatus(row.status)))
+        .map((row) => {
+          const manualMovieCode = normalizeMovieCode(row.manual_movie_code);
+          if (manualMovieCode && row.status !== "ready_exception") {
+            return {
+              ...row,
+              status: "ready_exception",
+              operation: "register_owned_only",
+              movie_code: manualMovieCode,
+              target_path: row.source_path,
+              source_type: "exception_folder",
+              match_reason: `manual_approved:${row.match_reason || "review"}`,
+            };
+          }
+          return row;
+        });
+      if (rows.length === 0) throw new Error("No ready exception rows in review CSV");
+      for (const row of rows) {
+        if (!isUnderDirectory(row.source_path, EXCEPTION_DIR)) throw new Error(`Plan row is outside exception folder: ${row.source_path}`);
+      }
+      const outputPath = writeCsv(rows, path.resolve(__dirname, "..", "..", "storage", "exports", SOURCE), args.step);
+      process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, output_path: outputPath, summary: summarize(rows), result: {} }, null, 2)}\n`);
+      return;
+    }
+    if (args.step === "exception-review" || args.step === "exception-apply") {
+      const rows = args.step === "exception-apply" ? await readApprovedPlan(args.planCsv, "exception", "", client) : await buildExceptionPlan(client);
+      const outputPath = writeCsv(rows, path.resolve(__dirname, "..", "..", "storage", "exports", SOURCE), args.step);
+      const result = args.step === "exception-apply" ? await applyOwned(client, rows) : {};
+      if (args.step === "exception-apply" && result.registered > 0) result.video_metadata = runVideoMetadataCollect(args.envFile);
+      process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, output_path: outputPath, summary: summarize(rows), result }, null, 2)}\n`);
+      return;
+    }
+    if (!args.inputDir) throw new Error("--input-dir is required");
+    if (args.step === "owned-ready-plan") {
+      if (!args.planCsv) throw new Error("--plan-csv is required");
+      const inputDir = path.resolve(args.inputDir);
+      const rows = parseCsv(fs.readFileSync(path.resolve(args.planCsv), "utf8")).filter((row) => ["ready", "ready_recover_owned"].includes(row.status));
+      if (rows.length === 0) throw new Error("No ready owned rows in review CSV");
+      for (const row of rows) {
+        if (!isUnderDirectory(row.source_path, inputDir) && !isUnderDirectory(row.source_path, targetDirForDrive(driveOf(inputDir)))) throw new Error(`Plan row does not match input directory: ${row.source_path}`);
+      }
+      const outputPath = writeCsv(rows, args.inputDir, args.step);
+      process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, input_dir: args.inputDir, output_path: outputPath, summary: summarize(rows), result: {} }, null, 2)}\n`);
+      return;
+    }
     const rows = args.step === "owned-apply" ? await readApprovedPlan(args.planCsv, "owned", args.inputDir, client) : await buildOwnedPlan(client, args.inputDir);
     const outputPath = writeCsv(rows, args.inputDir, args.step);
     const result = args.step === "owned-apply" ? await applyOwned(client, rows) : {};
-    if (args.step === "owned-apply" && result.registered > 0) {
-      result.video_metadata = runVideoMetadataCollect(args.envFile);
-    }
+    if (args.step === "owned-apply" && result.registered > 0) result.video_metadata = runVideoMetadataCollect(args.envFile);
     if (!["owned-review", "owned-apply"].includes(args.step)) throw new Error(`Unsupported step: ${args.step}`);
     process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, input_dir: args.inputDir, output_path: outputPath, summary: summarize(rows), result }, null, 2)}\n`);
   } finally { await client.end(); }

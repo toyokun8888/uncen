@@ -17,6 +17,7 @@ create table if not exists cl.actor_group_master (
     actor_group_id bigserial primary key,
     group_code text not null,
     representative_actor_name text not null,
+    representative_actor_name_ja text,
     note text,
     created_at timestamp with time zone not null default now(),
     updated_at timestamp with time zone not null default now(),
@@ -26,6 +27,7 @@ create table if not exists cl.actor_group_master (
 create table if not exists cl.actor_name_master (
     actor_name_id bigserial primary key,
     actor_name text not null,
+    actor_name_ja text,
     site_id bigint not null references cl.site_master(site_id),
     actor_group_id bigint not null references cl.actor_group_master(actor_group_id),
     note text,
@@ -33,6 +35,12 @@ create table if not exists cl.actor_name_master (
     updated_at timestamp with time zone not null default now(),
     constraint actor_name_master_site_actor_name_key unique (site_id, actor_name)
 );
+
+alter table cl.actor_group_master
+    add column if not exists representative_actor_name_ja text;
+
+alter table cl.actor_name_master
+    add column if not exists actor_name_ja text;
 
 create index if not exists actor_name_master_site_id_idx
     on cl.actor_name_master (site_id);

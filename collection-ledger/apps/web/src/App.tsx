@@ -14,9 +14,9 @@ type TabKey = "library" | "completion";
 const PAGE_SIZE = 36;
 
 function App() {
-  const [tab, setTab] = useState<TabKey>("library");
+  const [tab, setTab] = useState<TabKey>(() => initialTab());
   const [sites, setSites] = useState<SiteItem[]>([]);
-  const [source, setSource] = useState("paco");
+  const [source, setSource] = useState(() => initialSource());
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
   const [completionItems, setCompletionItems] = useState<CompletionItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -98,6 +98,17 @@ function App() {
       )}
     </div>
   );
+}
+
+function initialSource() {
+  if (typeof window === "undefined") return "paco";
+  const source = new URLSearchParams(window.location.search).get("source");
+  return source?.trim() || "paco";
+}
+
+function initialTab(): TabKey {
+  if (typeof window === "undefined") return "library";
+  return new URLSearchParams(window.location.search).get("tab") === "completion" ? "completion" : "library";
 }
 
 function LocalLibraryPage({

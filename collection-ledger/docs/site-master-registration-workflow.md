@@ -81,7 +81,7 @@ only rows with `probe_status = 'ok'` for `resolution_class`, `best_resolution_cl
 | 1意キー | `movie_code` | 実データで重複確認して決める |
 | 詳細ページ取得 | 111ページ以降で必要 | 一覧にリンクがない場合の分岐を確認する |
 | サムネイル | 元サイトから取得 | 取得可否、保存名、手動補完を確認する |
-| NAS範囲 | D/E/F/G/H/I/J/K/L/N/P | 対象ドライブを毎回確認する |
+| NAS範囲 | D/E/F/G/H/I/J/K/L/N/P/Q | 対象ドライブを毎回確認する |
 
 ### 固定ルール
 

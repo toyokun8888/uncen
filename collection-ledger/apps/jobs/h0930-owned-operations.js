@@ -1,14 +1,15 @@
-"use strict";
+﻿"use strict";
 
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const SOURCE = "10musume";
-const DB_PREFIX = "tenmusume";
-const SEARCH_TEXT = "10mu";
+const SOURCE = "h0930";
+const DB_PREFIX = "h0930";
+const SEARCH_TEXT = "h0930";
 const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"];
 const VIDEO_EXTENSIONS = new Set([".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpg", ".mpeg", ".ts", ".wmv"]);
+const MOVIE_CODE_PATTERN = "(?:orijuku|orimrs|ori|gol|ki|pla|tk)[0-9]+";
 
 function parseArgs(argv) {
   const args = { step: "collect-review", inputDir: "", planCsv: "", envFile: "" };
@@ -148,12 +149,14 @@ function buildCollectPlan() {
     );
     for (const filePath of scan.files) {
       const stat = fs.statSync(filePath);
+      const candidates = candidateCodes(path.basename(filePath), true);
       const targetPath = uniqueTargetPath(targetDir, path.basename(filePath), plannedTargets);
       const targetKey = targetPath.toLowerCase();
       rows.push({
-        status: plannedTargets.has(targetKey) ? "duplicate_target_path" : "ready",
+        status: candidates.length === 0 ? "not_h0930_code" : plannedTargets.has(targetKey) ? "duplicate_target_path" : "ready",
         operation: "collect",
         movie_code: "",
+        candidates: candidates.join(" | "),
         source_path: filePath,
         target_path: targetPath,
         file_name: path.basename(filePath),
@@ -172,24 +175,22 @@ function buildCollectPlan() {
 function candidateCodes(fileName, allowRenamed = false) {
   const stem = path.parse(fileName).name;
   const lower = stem.toLowerCase();
-  if (!lower.includes("10mu") && !allowRenamed) return [];
+  if (!lower.includes("h0930") && !allowRenamed) return [];
   const result = [];
-  const exactPrefix = allowRenamed ? stem.match(/^([0-9]{6}_[0-9]{1,2})(?:_|$)/) : null;
+  const codePattern = `(${MOVIE_CODE_PATTERN})(?=$|[_-]|[^A-Za-z0-9])`;
+  const exactPrefix = allowRenamed ? stem.match(new RegExp(`^${codePattern}`, "i")) : null;
   if (exactPrefix) result.push(exactPrefix[1]);
-  for (const match of stem.matchAll(/([0-9]{6})[_-]([0-9]{1,2})(?![0-9A-Za-z])/g)) {
-    result.push(`${match[1]}_${String(Number(match[2])).padStart(2, "0")}`);
-  }
-  for (const match of stem.matchAll(/([0-9]{6})[_-]([0-9]{1,2})(?=[_-](?:10mu|10musume)(?:[_-]|$))/gi)) {
-    result.push(`${match[1]}_${String(Number(match[2])).padStart(2, "0")}`);
-  }
-  for (const match of stem.matchAll(/([0-9]{6})/g)) {
+  for (const match of stem.matchAll(new RegExp(`(?:^|[^A-Za-z0-9])(?:better[_-]?)?h0930[_-]?${codePattern}`, "gi"))) {
     result.push(match[1]);
   }
-  return [...new Set(result)];
+  for (const match of stem.matchAll(new RegExp(`(?:^|[^A-Za-z0-9])${codePattern}`, "gi"))) {
+    result.push(match[1]);
+  }
+  return [...new Set(result.map((item) => item.toLowerCase()))];
 }
 
 async function fetchMasterMap(client) {
-  const result = await client.query(`select movie_code, relation_key_mmddyy, title, coalesce(actor_name,'') actor_name from cl.${DB_PREFIX}_m003_master`);
+  const result = await client.query(`select movie_code, relation_key_mmddyy, title, coalesce(actor_name,'') actor_name from cl.${DB_PREFIX}_m006_master`);
   const exact = new Map(result.rows.map((row) => [row.movie_code.toLowerCase(), row]));
   const relation = new Map();
   for (const row of result.rows) {
@@ -202,7 +203,7 @@ async function fetchMasterMap(client) {
 
 function matchMaster(fileName, maps, allowRenamed = false) {
   const candidates = candidateCodes(fileName, allowRenamed);
-  const hasExplicitBranch = candidates.some((item) => /^[0-9]{6}_[0-9A-Za-z]+$/.test(item));
+  const hasExplicitBranch = candidates.some((item) => new RegExp(`^${MOVIE_CODE_PATTERN}$`).test(item));
   const exactMatches = [...new Map(candidates
     .map((candidate) => maps.exact.get(candidate.toLowerCase()))
     .filter(Boolean)
@@ -210,7 +211,7 @@ function matchMaster(fileName, maps, allowRenamed = false) {
   if (exactMatches.length === 1) return { master: exactMatches[0], candidates, reason: "exact" };
   if (exactMatches.length > 1) return { master: null, candidates, reason: "multiple_exact_matches" };
   if (hasExplicitBranch) return { master: null, candidates, reason: "explicit_branch_not_matched" };
-  const dateCandidates = candidates.filter((item) => /^[0-9]{6}$/.test(item));
+  const dateCandidates = candidates.filter((item) => new RegExp(`^${MOVIE_CODE_PATTERN}$`).test(item));
   const relationMatches = [...new Map(dateCandidates
     .flatMap((candidate) => maps.relation.get(candidate) || [])
     .map((master) => [master.movie_code, master])).values()];
@@ -234,7 +235,7 @@ async function buildOwnedPlan(client, inputDir) {
   const reservedTargets = new Set();
   for (const filePath of scan.files) {
     const stat = fs.statSync(filePath);
-    const match = matchMaster(path.basename(filePath), maps, false);
+    const match = matchMaster(path.basename(filePath), maps, true);
     const master = match.master;
     const ext = path.extname(filePath).toLowerCase();
     const actor = master ? cleanName(master.actor_name) : "";
@@ -365,7 +366,8 @@ async function readApprovedPlan(planCsv, mode, inputDir = "", client = null) {
   if (!planCsv) throw new Error("--plan-csv is required for apply");
   const rows = parseCsv(fs.readFileSync(path.resolve(planCsv), "utf8"));
   let expectedRows = [];
-  if (mode === "master-complement") expectedRows = await buildMissingMasterPlan(client);
+  if (mode === "collect") expectedRows = buildCollectPlan();
+  else if (mode === "master-complement") expectedRows = await buildMissingMasterPlan(client);
   else if (mode === "owned") expectedRows = await buildOwnedPlan(client, inputDir);
   const expectedBySource = new Map(expectedRows.map((row) => [path.resolve(row.source_path).toLowerCase(), row]));
   const targetPaths = new Set();
@@ -377,7 +379,7 @@ async function readApprovedPlan(planCsv, mode, inputDir = "", client = null) {
     if (row.file_mtime && new Date(row.file_mtime).getTime() !== stat.mtime.getTime()) throw new Error(`Source file mtime changed: ${row.source_path}`);
     const sourceDrive = driveOf(row.source_path);
     if (mode === "master-complement") {
-      if (row.status !== "ready" || !/^[0-9]{6}_[0-9]{2}$/.test(row.movie_code)) throw new Error(`Invalid master complement row: ${row.source_path}`);
+      if (row.status !== "ready" || !new RegExp(`^${MOVIE_CODE_PATTERN}$`).test(row.movie_code)) throw new Error(`Invalid master complement row: ${row.source_path}`);
       if (!DRIVES.includes(sourceDrive) || row.drive_letter !== sourceDrive) throw new Error(`Invalid drive mapping: ${row.source_path}`);
       if (!isUnderDirectory(row.source_path, targetDirForDrive(sourceDrive))) throw new Error(`Invalid master complement source path: ${row.source_path}`);
       const expected = expectedBySource.get(path.resolve(row.source_path).toLowerCase());
@@ -394,6 +396,9 @@ async function readApprovedPlan(planCsv, mode, inputDir = "", client = null) {
     if (mode === "collect") {
       if (row.operation !== "collect" || row.movie_code) throw new Error(`Invalid collect row: ${row.source_path}`);
       if (!isUnderDirectory(row.source_path, `${sourceDrive}:\\`) || !isUnderDirectory(row.target_path, targetDirForDrive(sourceDrive))) throw new Error(`Invalid collect paths: ${row.source_path}`);
+      const expected = expectedBySource.get(path.resolve(row.source_path).toLowerCase());
+      if (!expected) throw new Error(`Collect row is no longer valid: ${row.source_path}`);
+      assertSamePlanRow(row, expected, ["status", "operation", "target_path", "file_name", "drive_letter", "file_size_bytes", "file_mtime"]);
     } else {
       if (!["rename_move_register", "register_owned_only"].includes(row.operation) || !row.movie_code) throw new Error(`Invalid owned row: ${row.source_path}`);
       const expectedInput = path.resolve(inputDirForDrive(sourceDrive));
@@ -415,14 +420,6 @@ function summarize(rows) {
   return { total: rows.length, by_status: byStatus };
 }
 
-function releaseDateFromCode(movieCode) {
-  const match = String(movieCode || "").match(/^([0-9]{2})([0-9]{2})([0-9]{2})_/);
-  if (!match) return null;
-  const value = `20${match[3]}-${match[1]}-${match[2]}`;
-  const date = new Date(`${value}T00:00:00Z`);
-  return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value ? null : value;
-}
-
 async function buildMissingMasterPlan(client) {
   const maps = await fetchMasterMap(client);
   const rows = [];
@@ -431,19 +428,18 @@ async function buildMissingMasterPlan(client) {
     const scan = listFiles(targetDirForDrive(drive), isVideo);
     for (const filePath of scan.files) {
       const candidates = candidateCodes(path.basename(filePath), true);
-      const explicitCodes = [...new Set(candidates.filter((value) => /^[0-9]{6}_[0-9]{2}$/.test(value)))];
+      const explicitCodes = [...new Set(candidates.filter((value) => new RegExp(`^${MOVIE_CODE_PATTERN}$`).test(value)))];
       if (explicitCodes.length !== 1) continue;
       const explicitCode = explicitCodes[0];
       if (!explicitCode || maps.exact.has(explicitCode.toLowerCase()) || seen.has(explicitCode)) continue;
       seen.add(explicitCode);
       const stem = path.parse(filePath).name;
       const stat = fs.statSync(filePath);
-      const releaseDate = releaseDateFromCode(explicitCode);
       rows.push({
-        status: releaseDate ? "ready" : "invalid_movie_code_date",
+        status: "ready",
         movie_code: explicitCode,
-        relation_key_mmddyy: explicitCode.slice(0, 6),
-        release_date: releaseDate || "",
+        relation_key_mmddyy: explicitCode,
+        release_date: "",
         title: cleanName(stem),
         source_path: filePath,
         drive_letter: drive,
@@ -456,19 +452,19 @@ async function buildMissingMasterPlan(client) {
 }
 
 async function applyMissingMasters(client, rows) {
-  const unsafe = rows.filter((row) => row.status !== "ready" || !/^[0-9]{6}_[0-9]{2}$/.test(row.movie_code));
+  const unsafe = rows.filter((row) => row.status !== "ready" || !new RegExp(`^${MOVIE_CODE_PATTERN}$`).test(row.movie_code));
   if (unsafe.length) throw new Error(`Missing master plan has unsafe rows: ${unsafe.length}`);
   await client.query("begin");
   try {
     let inserted = 0;
     for (const row of rows) {
-      const detailUrl = `https://www.10musume.com/movies/${row.movie_code}/`;
-      const thumbnailUrl = `https://www.10musume.com/assets/sample/${row.movie_code}/list1.jpg`;
-      const result = await client.query(`insert into cl.${DB_PREFIX}_m003_master
+      const detailUrl = `https://www.h0930.com/moviepages/${row.movie_code}/index.html`;
+      const thumbnailUrl = `https://www.h0930.com/moviepages/${row.movie_code}/images/thumb_s.jpg`;
+      const result = await client.query(`insert into cl.${DB_PREFIX}_m006_master
         (movie_code,relation_key_mmddyy,release_date,release_date_text,movie_code_suffix,title,channel_name,detail_url,thumbnail_url,review_status,note)
-        values ($1,$2,$3,$4,$5,$6,'10mu',$7,$8,'owned_file_added','Added from explicit owned filename after review')
+        values ($1,$2,$3,$4,$5,$6,'H0930',$7,$8,'owned_file_added','Added from explicit owned filename after review')
         on conflict (movie_code) do nothing`,
-      [row.movie_code, row.relation_key_mmddyy, row.release_date || null, row.release_date || null, row.movie_code.slice(7), row.title, detailUrl, thumbnailUrl]);
+      [row.movie_code, row.relation_key_mmddyy, row.release_date || null, row.release_date || null, row.movie_code.replace(/^(orijuku|orimrs|ori|gol|ki|pla|tk)/, ""), row.title, detailUrl, thumbnailUrl]);
       inserted += result.rowCount;
     }
     await client.query("commit");
@@ -506,7 +502,7 @@ async function applyOwned(client, rows) {
       }
       const stat = fs.statSync(row.target_path);
       await client.query(`insert into cl.${DB_PREFIX}_owned_file (movie_code,file_path,file_name,file_ext,drive_letter,file_size_bytes,file_mtime,last_seen_at,note)
-        values ($1,$2,$3,$4,$5,$6,$7,now(),'Imported by tenmusume-owned-operations')
+        values ($1,$2,$3,$4,$5,$6,$7,now(),'Imported by h0930-owned-operations')
         on conflict (file_path) do update set movie_code=excluded.movie_code,file_name=excluded.file_name,file_ext=excluded.file_ext,drive_letter=excluded.drive_letter,
         file_size_bytes=excluded.file_size_bytes,file_mtime=excluded.file_mtime,last_seen_at=now(),updated_at=now()`,
       [row.movie_code, row.target_path, path.basename(row.target_path), row.file_ext, row.drive_letter, stat.size, stat.mtime.toISOString()]);
@@ -533,6 +529,14 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, output_path: outputPath, summary: summarize(rows), result }, null, 2)}\n`);
     return;
   }
+  if (args.step === "collect-ready-plan") {
+    if (!args.planCsv) throw new Error("--plan-csv is required");
+    const rows = parseCsv(fs.readFileSync(path.resolve(args.planCsv), "utf8")).filter((row) => row.status === "ready");
+    if (rows.length === 0) throw new Error("No ready collect rows in review CSV");
+    const outputPath = writeCsv(rows, path.resolve(__dirname, "..", "..", "storage", "exports", SOURCE), args.step);
+    process.stdout.write(`${JSON.stringify({ ok: true, step: args.step, output_path: outputPath, summary: summarize(rows), result: {} }, null, 2)}\n`);
+    return;
+  }
   if (args.step === "master-complement-review" || args.step === "master-complement-apply") {
     const client = createPgClient();
     await client.connect();
@@ -550,6 +554,7 @@ async function main() {
     const inputDir = path.resolve(args.inputDir);
     const rows = parseCsv(fs.readFileSync(path.resolve(args.planCsv), "utf8"))
       .filter((row) => ["ready", "ready_recover_owned"].includes(row.status));
+    if (rows.length === 0) throw new Error("No ready owned rows in review CSV");
     for (const row of rows) {
       if (!isUnderDirectory(row.source_path, inputDir) && !isUnderDirectory(row.source_path, targetDirForDrive(driveOf(inputDir)))) {
         throw new Error(`Plan row does not match input directory: ${row.source_path}`);
@@ -574,3 +579,5 @@ async function main() {
 }
 
 main().catch((error) => { process.stderr.write(`${error.stack || error.message}\n`); process.exitCode = 1; });
+
+

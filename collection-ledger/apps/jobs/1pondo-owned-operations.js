@@ -7,7 +7,7 @@ const { spawnSync } = require("child_process");
 const SOURCE = "1pondo";
 const DB_PREFIX = "onepondo";
 const SEARCH_TEXT = "1pon";
-const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P"];
+const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"];
 const VIDEO_EXTENSIONS = new Set([".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpg", ".mpeg", ".ts", ".wmv"]);
 
 function parseArgs(argv) {
@@ -234,7 +234,7 @@ async function buildOwnedPlan(client, inputDir) {
   const reservedTargets = new Set();
   for (const filePath of scan.files) {
     const stat = fs.statSync(filePath);
-    const match = matchMaster(path.basename(filePath), maps, false);
+    const match = matchMaster(path.basename(filePath), maps, true);
     const master = match.master;
     const ext = path.extname(filePath).toLowerCase();
     const actor = master ? cleanName(master.actor_name) : "";
@@ -554,6 +554,7 @@ async function main() {
     const inputDir = path.resolve(args.inputDir);
     const rows = parseCsv(fs.readFileSync(path.resolve(args.planCsv), "utf8"))
       .filter((row) => ["ready", "ready_recover_owned"].includes(row.status));
+    if (rows.length === 0) throw new Error("No ready owned rows in review CSV");
     for (const row of rows) {
       if (!isUnderDirectory(row.source_path, inputDir) && !isUnderDirectory(row.source_path, targetDirForDrive(driveOf(inputDir)))) {
         throw new Error(`Plan row does not match input directory: ${row.source_path}`);
