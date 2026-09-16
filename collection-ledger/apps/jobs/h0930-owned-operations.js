@@ -7,7 +7,7 @@ const { spawnSync } = require("child_process");
 const SOURCE = "h0930";
 const DB_PREFIX = "h0930";
 const SEARCH_TEXT = "h0930";
-const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"];
+const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R"];
 const VIDEO_EXTENSIONS = new Set([".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpg", ".mpeg", ".ts", ".wmv"]);
 const MOVIE_CODE_PATTERN = "(?:orijuku|orimrs|ori|gol|ki|pla|tk)[0-9]+";
 

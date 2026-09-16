@@ -15,10 +15,10 @@ const EXPLICIT_OWNED_FOLDERS = [
 ];
 const SPECIAL_FOLDER = "G:\\all\\お気に入りD(F)\\新規DL\\月極\\東熱";
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mkv", ".mov", ".avi", ".wmv", ".ts", ".m2ts"]);
-const NAS_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"];
+const NAS_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R"];
 
 function parseArgs(argv) {
-  const args = { step: "review", envFile: "", planCsv: "", outputDir: path.resolve("storage", "exports", SOURCE), limit: 0, explicitOnly: false };
+  const args = { step: "review", envFile: "", planCsv: "", inputDir: "", outputDir: path.resolve("storage", "exports", SOURCE), limit: 0, explicitOnly: false };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--step") args.step = argv[++i];
@@ -27,12 +27,24 @@ function parseArgs(argv) {
     else if (arg.startsWith("--env-file=")) args.envFile = arg.slice(11);
     else if (arg === "--plan-csv") args.planCsv = argv[++i];
     else if (arg.startsWith("--plan-csv=")) args.planCsv = arg.slice(11);
+    else if (arg === "--input-dir") args.inputDir = argv[++i];
+    else if (arg.startsWith("--input-dir=")) args.inputDir = arg.slice(12);
     else if (arg === "--output-dir") args.outputDir = argv[++i];
     else if (arg.startsWith("--output-dir=")) args.outputDir = arg.slice(13);
     else if (arg === "--limit") args.limit = Number(argv[++i]);
     else if (arg.startsWith("--limit=")) args.limit = Number(arg.slice(8));
     else if (arg === "--explicit-only") args.explicitOnly = true;
     else throw new Error(`Unknown argument: ${arg}`);
+  }
+  if (args.inputDir) {
+    const resolvedInput = path.resolve(args.inputDir);
+    const drive = driveLetter(resolvedInput);
+    const expectedInput = path.resolve(`${drive}:\\uncen\\${SOURCE}_new_mp4`);
+    if (!NAS_DRIVES.includes(drive) || resolvedInput.toLowerCase() !== expectedInput.toLowerCase()) {
+      throw new Error(`Input directory must be exactly ${expectedInput}`);
+    }
+    args.inputDir = resolvedInput;
+    args.outputDir = resolvedInput;
   }
   return args;
 }
@@ -216,6 +228,20 @@ async function buildPlan(client, args) {
   const rows = [];
   const perDrive = {};
   const limitRef = { limit: args.limit, count: 0 };
+  if (args.inputDir) {
+    const files = listVideoFiles(args.inputDir, scanErrors, limitRef);
+    for (const file of files) rows.push(fileRow(file, masters, ownedPaths, "staging_input"));
+    perDrive[driveLetter(args.inputDir)] = rows.length;
+    dedupeRowsBySourcePath(rows);
+    markDuplicates(rows);
+    return {
+      rows,
+      scanErrors,
+      perDrive,
+      available_roots: [args.inputDir],
+      explicit_owned_folders: [],
+    };
+  }
   for (const root of availableDriveRoots()) {
     const before = rows.length;
     const files = listVideoFiles(root, scanErrors, limitRef);

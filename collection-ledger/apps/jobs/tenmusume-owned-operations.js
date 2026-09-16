@@ -7,7 +7,7 @@ const { spawnSync } = require("child_process");
 const SOURCE = "10musume";
 const DB_PREFIX = "tenmusume";
 const SEARCH_TEXT = "10mu";
-const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"];
+const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R"];
 const VIDEO_EXTENSIONS = new Set([".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpg", ".mpeg", ".ts", ".wmv"]);
 
 function parseArgs(argv) {

@@ -293,7 +293,18 @@ async function collectThumbnails(args) {
   const client = createPgClient();
   await client.connect();
   try {
-    const result = await client.query(`select movie_code, thumbnail_url from cl.${DB_PREFIX}_m006_master where coalesce(thumbnail_url,'')<>'' order by movie_code limit $1`, [args.limit > 0 ? args.limit : 100000]);
+    const result = await client.query(`
+      select m.movie_code, m.thumbnail_url
+      from cl.${DB_PREFIX}_m006_master m
+      left join cl.${DB_PREFIX}_m006_thumbnail_assets a
+        on a.movie_code = m.movie_code
+      where coalesce(m.thumbnail_url, '') <> ''
+        and coalesce(a.thumbnail_status, 'pending') <> 'collected'
+      order by
+        case when a.thumbnail_status is null then 0 else 1 end,
+        m.movie_code
+      limit $1
+    `, [args.limit > 0 ? args.limit : 100000]);
     if (args.dryRun) return result.rows;
     const summary = { collected: 0, existing: 0, failed: 0 };
     for (const row of result.rows) {
