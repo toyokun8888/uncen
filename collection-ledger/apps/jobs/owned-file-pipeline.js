@@ -6,7 +6,7 @@ const { spawnSync } = require("child_process");
 
 const PACO_SITE_ID = 1;
 const PACO_SOURCE_NAME = "paco";
-const DEFAULT_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"];
+const DEFAULT_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R", "T"];
 
 function parseArgs(argv) {
   const args = {

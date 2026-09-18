@@ -8,7 +8,7 @@ const SOURCE = "carib";
 const DB_PREFIX = "carib";
 const SEARCH_TEXT = "carib";
 const EXCEPTION_DIR = "H:\\all\\保存\\2020.01.06\\月極\\カリビアン";
-const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R"];
+const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R", "T"];
 const VIDEO_EXTENSIONS = new Set([".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpg", ".mpeg", ".ts", ".wmv"]);
 
 function parseArgs(argv) {

@@ -251,7 +251,7 @@ function normalizeWindowsPath(targetPath) {
 function resolveAllowedRoots() {
   const raw = (process.env.MEDIA_ALLOWED_ROOTS || "").trim();
   const defaultRoots = [
-    ...["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R"].map((drive) => `${drive}:\\uncen`),
+    ...["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R", "T"].map((drive) => `${drive}:\\uncen`),
     "G:\\all\\お気に入りD(F)\\新規DL\\月極\\東熱",
     "N:\\NEWRG\\4K_TokyoHot",
     "L:\\all\\LONG\\Tokyo-Hot-n0001-500",

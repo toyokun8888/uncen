@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const SOURCE_NAME = "heydouga_4017";
-const DEFAULT_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"];
+const DEFAULT_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R", "T"];
 const VIDEO_EXTENSIONS = new Set([
   ".avi",
   ".m2ts",

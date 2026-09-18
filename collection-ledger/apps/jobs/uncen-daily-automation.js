@@ -6,7 +6,7 @@ const { spawn } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const ENV_FILE = process.env.UNCEN_ENV_FILE || "C:\\Users\\toyoaki\\Desktop\\filedatachange\\.env";
-const P_ROOT = process.env.UNCEN_P_ROOT || "R:\\uncen";
+const P_ROOT = process.env.UNCEN_P_ROOT || "T:\\uncen";
 const LOG_DIR = process.env.UNCEN_AUTOMATION_LOG_DIR || path.join(ROOT, "storage", "logs", "uncen-daily");
 const LOCK_DIR = process.env.UNCEN_AUTOMATION_LOCK_DIR || path.join(ROOT, "storage", "locks");
 const TIMEOUT_MS = Number(process.env.UNCEN_STEP_TIMEOUT_MS || 3 * 60 * 60 * 1000);

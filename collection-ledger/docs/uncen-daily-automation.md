@@ -1,4 +1,4 @@
-# R:\\uncen daily automation
+# T:\\uncen daily automation
 
 `apps/jobs/uncen-daily-automation.js` is the non-interactive PM2 entry point. It
 does not execute anything unless `UNCEN_AUTOMATION_EXECUTE=YES`; `--list` and
@@ -6,6 +6,10 @@ does not execute anything unless `UNCEN_AUTOMATION_EXECUTE=YES`; `--list` and
 all five stages. A later stage waits up to 12 hours for its predecessor and
 recovers a lock whose owner process no longer exists. Each child process is sequential, checked by exit code, and
 limited by `UNCEN_STEP_TIMEOUT_MS` (three hours by default).
+
+`T:\\uncen` is the active root for new writes from 2026-09-18. Existing files and
+database paths under `R:\\uncen` remain valid and the browser keeps both roots in
+its allow-list; this is an additive storage switch, not a physical migration.
 PM2 startup itself is harmless: scheduled processes also require the current
 time to be within their ten-minute execution window. A controlled manual live
 run additionally sets `UNCEN_RUN_NOW=YES`.
@@ -21,12 +25,12 @@ run additionally sets `UNCEN_RUN_NOW=YES`.
 - 14:00 (`stage2`): import manual thumbnails, then search Sukebei independently
   for `10mu`, `1pon`, `carib`, `paco`, `heyzo` and `h0930`. Only exact codes
   still unowned in each site's completion view are reserved. Validated torrent
-  files are placed in the dedicated `R:\\uncen\\torrent_automation\\inbox` and
+  files are placed in the dedicated `T:\\uncen\\torrent_automation\\inbox` and
   the existing `torrent_import.js` submits them to qBittorrent with
-  `R:\\uncen\\torrent_automation\\downloads` as the save path. Existing FC2
+  `T:\\uncen\\torrent_automation\\downloads` as the save path. Existing FC2
   torrents keep their original Q-drive settings.
 - 15:00 (`stage3`): stage completed qBittorrent videos into the matching
-  `R:\\uncen\\*_new_mp4` directory without deleting the downloaded source. Then run
+  `T:\\uncen\\*_new_mp4` directory without deleting the downloaded source. Then run
   each site's existing review/ready-plan/apply ownership workflow. Apply always
   receives the exact CSV created by its immediately preceding review step. The
   runner snapshots matching CSV files before each child process and stops unless
@@ -48,18 +52,18 @@ accepts completed torrents from the configured download directory, requires
 every video in a torrent to classify safely, and verifies every new hard link or
 cross-volume copy with SHA-256 before removing the qB registration.
 
-The source video in `R:\\uncen\\torrent_automation\\downloads` is always retained.
+The source video in `T:\\uncen\\torrent_automation\\downloads` is always retained.
 Normal staging first attempts an NTFS hard link and falls back to an exclusive
 copy when links are unsupported; an existing destination is never overwritten.
 If a same-name destination has the same SHA-256, both existing files are kept and
 the source is logged as a duplicate candidate. If the content differs, a
 collision-safe review copy is created under
-`R:\\uncen\\duplicate_review\\<site>\\<torrent-hash>`. The source remains in the
+`T:\\uncen\\duplicate_review\\<site>\\<torrent-hash>`. The source remains in the
 download directory in both cases. Deleting retained source payloads is a separate
 manual cleanup task and requires explicit review and approval.
 
 Each decision is appended as JSON Lines under
-`R:\\uncen\\torrent_automation\\logs` (or `UNCEN_VIDEO_STAGE_LOG_DIR` when
+`T:\\uncen\\torrent_automation\\logs` (or `UNCEN_VIDEO_STAGE_LOG_DIR` when
 explicitly configured). Before any qB removal request, the mandatory record
 includes the torrent, every retained source, target paths, SHA-256 values,
 verified results, and the fixed qB `deleteFiles=false` setting. If this mandatory

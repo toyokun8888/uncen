@@ -15,7 +15,7 @@ const EXPLICIT_OWNED_FOLDERS = [
 ];
 const SPECIAL_FOLDER = "G:\\all\\お気に入りD(F)\\新規DL\\月極\\東熱";
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mkv", ".mov", ".avi", ".wmv", ".ts", ".m2ts"]);
-const NAS_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R"];
+const NAS_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R", "T"];
 
 function parseArgs(argv) {
   const args = { step: "review", envFile: "", planCsv: "", inputDir: "", outputDir: path.resolve("storage", "exports", SOURCE), limit: 0, explicitOnly: false };

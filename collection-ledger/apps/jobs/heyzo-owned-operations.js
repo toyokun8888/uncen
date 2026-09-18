@@ -7,7 +7,7 @@ const { spawnSync } = require("child_process");
 const SOURCE = "heyzo";
 const DB_PREFIX = "heyzo";
 const SEARCH_TEXT = "heyzo";
-const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R"];
+const DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R", "T"];
 const VIDEO_EXTENSIONS = new Set([".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpg", ".mpeg", ".ts", ".wmv"]);
 
 function parseArgs(argv) {

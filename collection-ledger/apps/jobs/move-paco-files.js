@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const DEFAULT_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q"];
+const DEFAULT_DRIVES = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "N", "P", "Q", "R", "T"];
 const DEFAULT_QUERY = "paco";
 const BASE_TARGET_DIR_NAME = "uncen";
 

@@ -6,7 +6,7 @@ const crypto = require("crypto");
 
 const ENV_FILE = process.env.UNCEN_ENV_FILE || "C:\\Users\\toyoaki\\Desktop\\filedatachange\\.env";
 loadEnv(ENV_FILE);
-const P_ROOT = process.env.UNCEN_P_ROOT || "R:\\uncen";
+const P_ROOT = process.env.UNCEN_P_ROOT || "T:\\uncen";
 const DOWNLOAD_ROOT = process.env.TORRENT_DOWNLOAD_DIR || "";
 const DUPLICATE_REVIEW_DIR = process.env.UNCEN_DUPLICATE_REVIEW_DIR || path.join(P_ROOT, "duplicate_review");
 const AUDIT_LOG_DIR = process.env.UNCEN_VIDEO_STAGE_LOG_DIR || process.env.TORRENT_LOG_DIR || path.join(P_ROOT, "torrent_automation", "logs", "video-stage");
