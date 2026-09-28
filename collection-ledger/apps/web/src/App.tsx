@@ -13,6 +13,10 @@ type TabKey = "library" | "completion";
 
 const PAGE_SIZE = 36;
 
+function usesRecognitionLayout(source: string) {
+  return source === "night24" || source === "gachinco";
+}
+
 function App() {
   const [tab, setTab] = useState<TabKey>(() => initialTab());
   const [sites, setSites] = useState<SiteItem[]>([]);
@@ -133,7 +137,7 @@ function LocalLibraryPage({
   const [titleQuery, setTitleQuery] = useState("");
   const [actorQuery, setActorQuery] = useState("");
   const [resolutionFilter, setResolutionFilter] = useState("all");
-  const [sortKey, setSortKey] = useState<LibrarySortKey>(source === "night24" ? "title_asc" : "release_desc");
+  const [sortKey, setSortKey] = useState<LibrarySortKey>(usesRecognitionLayout(source) ? "title_asc" : "release_desc");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<LibraryItem | null>(null);
   const [actionMessage, setActionMessage] = useState("");
@@ -148,7 +152,7 @@ function LocalLibraryPage({
         if (resolutionFilter !== "all" && item.resolutionClass !== resolutionFilter) {
           return false;
         }
-        if (source !== "night24" && id && !item.movieCode.toLowerCase().includes(id)) {
+        if (!usesRecognitionLayout(source) && id && !item.movieCode.toLowerCase().includes(id)) {
           return false;
         }
         if (title && !item.title.toLowerCase().includes(title)) {
@@ -180,7 +184,7 @@ function LocalLibraryPage({
   }, [actorQuery, idQuery, resolutionFilter, sortKey, source, titleQuery]);
 
   useEffect(() => {
-    setSortKey(source === "night24" ? "title_asc" : "release_desc");
+    setSortKey(usesRecognitionLayout(source) ? "title_asc" : "release_desc");
   }, [source]);
 
   useEffect(() => {
@@ -215,7 +219,7 @@ function LocalLibraryPage({
   }
 
   return (
-    <div className={source === "night24" ? "library-page night24-layout" : "library-page"}>
+    <div className={usesRecognitionLayout(source) ? "library-page night24-layout" : "library-page"}>
       <header className="page-topbar">
         <div>
           <h1>Local Library</h1>
@@ -235,7 +239,7 @@ function LocalLibraryPage({
           ))}
           {sites.length === 0 && <option value="paco">pacopacomama</option>}
         </select>
-        {source !== "night24" && (
+        {!usesRecognitionLayout(source) && (
           <input
             value={idInput}
             onChange={(event) => setIdInput(event.target.value)}
@@ -262,12 +266,12 @@ function LocalLibraryPage({
           <option value="low">LOW</option>
         </select>
         <select value={sortKey} onChange={(event) => setSortKey(event.target.value as LibrarySortKey)}>
-          {source === "night24" && <option value="title_asc">タイトル順</option>}
+          {usesRecognitionLayout(source) && <option value="title_asc">タイトル順</option>}
           <option value="release_desc">日付 降順</option>
           <option value="release_asc">日付 昇順</option>
           <option value="size_desc">サイズ 大きい順</option>
           <option value="size_asc">サイズ 小さい順</option>
-          {source !== "night24" && <>
+          {!usesRecognitionLayout(source) && <>
             <option value="code_desc">ID 降順</option>
             <option value="code_asc">ID 昇順</option>
           </>}
@@ -299,8 +303,8 @@ function LocalLibraryPage({
                 )}
               </button>
               <div className="card-meta">
-                {source !== "night24" && <div className="card-id">{item.movieCode}</div>}
-                {source === "night24" ? (
+                {!usesRecognitionLayout(source) && <div className="card-id">{item.movieCode}</div>}
+                {usesRecognitionLayout(source) ? (
                   <>
                     <div className="card-title" title={item.title}>{item.title}</div>
                     <div className="card-date">{item.releaseDate}</div>
@@ -363,12 +367,12 @@ function CompletionPage({
       .filter((item) => {
         if (!keyword) return true;
         return (
-          (source !== "night24" && item.movieCode.toLowerCase().includes(keyword)) ||
+          (!usesRecognitionLayout(source) && item.movieCode.toLowerCase().includes(keyword)) ||
           item.title.toLowerCase().includes(keyword) ||
           item.actorNames.toLowerCase().includes(keyword)
         );
       })
-      .sort((a, b) => source === "night24"
+      .sort((a, b) => usesRecognitionLayout(source)
         ? compareTitles(a, b)
         : b.releaseDate.localeCompare(a.releaseDate) || b.movieCode.localeCompare(a.movieCode));
   }, [hideOwned, items, query, source]);
@@ -394,7 +398,7 @@ function CompletionPage({
   }, [totalPages]);
 
   return (
-    <div className={source === "night24" ? "completion-page night24-layout" : "completion-page"}>
+    <div className={usesRecognitionLayout(source) ? "completion-page night24-layout" : "completion-page"}>
       <aside className="completion-sidebar">
         <div className="completion-header">
           <div>
@@ -436,7 +440,7 @@ function CompletionPage({
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder={source === "night24" ? "タイトル / 出演者" : "ID / タイトル / 出演者"}
+              placeholder={usesRecognitionLayout(source) ? "タイトル / 出演者" : "ID / タイトル / 出演者"}
             />
             <button type="button" onClick={() => setHideOwned((value) => !value)}>
               {hideOwned ? "所持も表示" : `所持を除外 (${stats.owned})`}
@@ -484,14 +488,14 @@ function CompletionCard({ item, source }: { item: CompletionItem; source: string
         )}
       </div>
       <div className="completion-text">
-        {source === "night24" && item.recognitionId && <div className="recognition-id">{item.recognitionId}</div>}
-        {source === "night24" && <div className="completion-title" title={item.title}>{item.title}</div>}
+        {usesRecognitionLayout(source) && item.recognitionId && <div className="recognition-id">{item.recognitionId}</div>}
+        {usesRecognitionLayout(source) && <div className="completion-title" title={item.title}>{item.title}</div>}
         <div className="completion-title-row">
-          {source !== "night24" && <span className={`completion-code ${statusClass}`}>{item.movieCode}</span>}
+          {!usesRecognitionLayout(source) && <span className={`completion-code ${statusClass}`}>{item.movieCode}</span>}
           <span>{item.releaseDate}</span>
           <strong>{statusLabel}</strong>
         </div>
-        {source !== "night24" && <div className="completion-title" title={item.title}>{item.title}</div>}
+        {!usesRecognitionLayout(source) && <div className="completion-title" title={item.title}>{item.title}</div>}
         <div className="completion-actors">{item.actorNames || "出演者未設定"}</div>
         <div className="completion-badges">
           {item.isOwned && <span>owned {item.ownedCount}</span>}
@@ -542,9 +546,9 @@ function ItemDialog({
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div className="dialog" onClick={(event) => event.stopPropagation()}>
-        <h2>{source === "night24" ? item.title : item.movieCode}</h2>
+        <h2>{usesRecognitionLayout(source) ? item.title : item.movieCode}</h2>
         <p>{item.releaseDate}</p>
-        {source !== "night24" && <p>{item.title}</p>}
+        {!usesRecognitionLayout(source) && <p>{item.title}</p>}
         <p>{item.actorNames || "出演者未設定"}</p>
         <p className="path">{item.filePath}</p>
         <div className="dialog-stats">

@@ -82,6 +82,15 @@ const SOURCE_CONFIGS = {
     ownedTable: "cl.night24_tm002_owned_files",
     videoMetadataTable: "cl.night24_tm011_owned_file_video_metadata",
   },
+  gachinco: {
+    source: "gachinco",
+    siteCode: "gachinco",
+    libraryView: "cl.gachinco_vq001_library_items",
+    completionView: "cl.gachinco_vq002_completion_items",
+    thumbnailTable: "cl.gachinco_vq003_thumbnail_assets",
+    ownedTable: "cl.gachinco_tm002_owned_files",
+    videoMetadataTable: "cl.gachinco_tm011_owned_file_video_metadata",
+  },
 };
 
 function getSourceConfig(source) {
