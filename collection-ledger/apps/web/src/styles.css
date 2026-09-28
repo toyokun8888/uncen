@@ -599,3 +599,24 @@ button:disabled {
     flex-wrap: wrap;
   }
 }
+
+.library-page.night24-layout .card-title,
+.completion-page.night24-layout .completion-title {
+  color: #9bf7be;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.completion-page.night24-layout .recognition-id {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 2px 6px;
+  border: 1px solid #385078;
+  border-radius: 5px;
+  background: #101722;
+  color: #c3d2ff;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}

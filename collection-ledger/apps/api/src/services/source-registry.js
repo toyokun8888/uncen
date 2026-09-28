@@ -73,6 +73,15 @@ const SOURCE_CONFIGS = {
     ownedTable: "cl.tokyo_hot_owned_file",
     videoMetadataTable: "cl.tokyo_hot_owned_file_video_metadata",
   },
+  night24: {
+    source: "night24",
+    siteCode: "night24",
+    libraryView: "cl.night24_vq001_library_items",
+    completionView: "cl.night24_vq002_completion_items",
+    thumbnailTable: "cl.night24_vq003_thumbnail_assets",
+    ownedTable: "cl.night24_tm002_owned_files",
+    videoMetadataTable: "cl.night24_tm011_owned_file_video_metadata",
+  },
 };
 
 function getSourceConfig(source) {

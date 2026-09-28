@@ -133,7 +133,7 @@ function LocalLibraryPage({
   const [titleQuery, setTitleQuery] = useState("");
   const [actorQuery, setActorQuery] = useState("");
   const [resolutionFilter, setResolutionFilter] = useState("all");
-  const [sortKey, setSortKey] = useState<LibrarySortKey>("release_desc");
+  const [sortKey, setSortKey] = useState<LibrarySortKey>(source === "night24" ? "title_asc" : "release_desc");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<LibraryItem | null>(null);
   const [actionMessage, setActionMessage] = useState("");
@@ -148,7 +148,7 @@ function LocalLibraryPage({
         if (resolutionFilter !== "all" && item.resolutionClass !== resolutionFilter) {
           return false;
         }
-        if (id && !item.movieCode.toLowerCase().includes(id)) {
+        if (source !== "night24" && id && !item.movieCode.toLowerCase().includes(id)) {
           return false;
         }
         if (title && !item.title.toLowerCase().includes(title)) {
@@ -160,7 +160,7 @@ function LocalLibraryPage({
         return true;
       })
       .sort((a, b) => sortLibraryItems(a, b, sortKey));
-  }, [actorQuery, idQuery, items, resolutionFilter, sortKey, titleQuery]);
+  }, [actorQuery, idQuery, items, resolutionFilter, sortKey, source, titleQuery]);
 
   const stats = useMemo(() => {
     return {
@@ -177,7 +177,11 @@ function LocalLibraryPage({
 
   useEffect(() => {
     setPage(1);
-  }, [actorQuery, idQuery, resolutionFilter, sortKey, titleQuery]);
+  }, [actorQuery, idQuery, resolutionFilter, sortKey, source, titleQuery]);
+
+  useEffect(() => {
+    setSortKey(source === "night24" ? "title_asc" : "release_desc");
+  }, [source]);
 
   useEffect(() => {
     setPage((currentPage) => Math.min(Math.max(1, currentPage), totalPages));
@@ -211,7 +215,7 @@ function LocalLibraryPage({
   }
 
   return (
-    <div className="library-page">
+    <div className={source === "night24" ? "library-page night24-layout" : "library-page"}>
       <header className="page-topbar">
         <div>
           <h1>Local Library</h1>
@@ -231,12 +235,14 @@ function LocalLibraryPage({
           ))}
           {sites.length === 0 && <option value="paco">pacopacomama</option>}
         </select>
-        <input
-          value={idInput}
-          onChange={(event) => setIdInput(event.target.value)}
-          onKeyDown={runSearchOnEnter}
-          placeholder="ID検索"
-        />
+        {source !== "night24" && (
+          <input
+            value={idInput}
+            onChange={(event) => setIdInput(event.target.value)}
+            onKeyDown={runSearchOnEnter}
+            placeholder="ID検索"
+          />
+        )}
         <input
           value={titleInput}
           onChange={(event) => setTitleInput(event.target.value)}
@@ -256,12 +262,15 @@ function LocalLibraryPage({
           <option value="low">LOW</option>
         </select>
         <select value={sortKey} onChange={(event) => setSortKey(event.target.value as LibrarySortKey)}>
+          {source === "night24" && <option value="title_asc">タイトル順</option>}
           <option value="release_desc">日付 降順</option>
           <option value="release_asc">日付 昇順</option>
           <option value="size_desc">サイズ 大きい順</option>
           <option value="size_asc">サイズ 小さい順</option>
-          <option value="code_desc">ID 降順</option>
-          <option value="code_asc">ID 昇順</option>
+          {source !== "night24" && <>
+            <option value="code_desc">ID 降順</option>
+            <option value="code_asc">ID 昇順</option>
+          </>}
         </select>
       </section>
 
@@ -290,9 +299,18 @@ function LocalLibraryPage({
                 )}
               </button>
               <div className="card-meta">
-                <div className="card-id">{item.movieCode}</div>
-                <div className="card-date">{item.releaseDate}</div>
-                <div className="card-title" title={item.title}>{item.title}</div>
+                {source !== "night24" && <div className="card-id">{item.movieCode}</div>}
+                {source === "night24" ? (
+                  <>
+                    <div className="card-title" title={item.title}>{item.title}</div>
+                    <div className="card-date">{item.releaseDate}</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="card-date">{item.releaseDate}</div>
+                    <div className="card-title" title={item.title}>{item.title}</div>
+                  </>
+                )}
                 <div className="card-actor" title={item.actorNames}>{item.actorNames || "出演者未設定"}</div>
                 <div className="card-badges">
                   <span>{item.resolutionLabel}</span>
@@ -309,6 +327,7 @@ function LocalLibraryPage({
       {selected && (
         <ItemDialog
           item={selected}
+          source={source}
           onClose={() => setSelected(null)}
           onOpenFile={() => void runOpen("file", selected)}
           onOpenFolder={() => void runOpen("folder", selected)}
@@ -344,13 +363,15 @@ function CompletionPage({
       .filter((item) => {
         if (!keyword) return true;
         return (
-          item.movieCode.toLowerCase().includes(keyword) ||
+          (source !== "night24" && item.movieCode.toLowerCase().includes(keyword)) ||
           item.title.toLowerCase().includes(keyword) ||
           item.actorNames.toLowerCase().includes(keyword)
         );
       })
-      .sort((a, b) => b.releaseDate.localeCompare(a.releaseDate) || b.movieCode.localeCompare(a.movieCode));
-  }, [hideOwned, items, query]);
+      .sort((a, b) => source === "night24"
+        ? compareTitles(a, b)
+        : b.releaseDate.localeCompare(a.releaseDate) || b.movieCode.localeCompare(a.movieCode));
+  }, [hideOwned, items, query, source]);
 
   const stats = useMemo(() => {
     return {
@@ -373,7 +394,7 @@ function CompletionPage({
   }, [totalPages]);
 
   return (
-    <div className="completion-page">
+    <div className={source === "night24" ? "completion-page night24-layout" : "completion-page"}>
       <aside className="completion-sidebar">
         <div className="completion-header">
           <div>
@@ -415,7 +436,7 @@ function CompletionPage({
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="ID / タイトル / 出演者"
+              placeholder={source === "night24" ? "タイトル / 出演者" : "ID / タイトル / 出演者"}
             />
             <button type="button" onClick={() => setHideOwned((value) => !value)}>
               {hideOwned ? "所持も表示" : `所持を除外 (${stats.owned})`}
@@ -436,7 +457,7 @@ function CompletionPage({
         ) : (
           <div className="completion-list">
             {pagedItems.map((item) => (
-              <CompletionCard key={item.movieCode} item={item} />
+              <CompletionCard key={item.movieCode} item={item} source={source} />
             ))}
           </div>
         )}
@@ -445,7 +466,7 @@ function CompletionPage({
   );
 }
 
-function CompletionCard({ item }: { item: CompletionItem }) {
+function CompletionCard({ item, source }: { item: CompletionItem; source: string }) {
   const statusClass = item.isOwned
     ? "owned"
     : item.hasDlReference
@@ -463,12 +484,14 @@ function CompletionCard({ item }: { item: CompletionItem }) {
         )}
       </div>
       <div className="completion-text">
+        {source === "night24" && item.recognitionId && <div className="recognition-id">{item.recognitionId}</div>}
+        {source === "night24" && <div className="completion-title" title={item.title}>{item.title}</div>}
         <div className="completion-title-row">
-          <span className={`completion-code ${statusClass}`}>{item.movieCode}</span>
+          {source !== "night24" && <span className={`completion-code ${statusClass}`}>{item.movieCode}</span>}
           <span>{item.releaseDate}</span>
           <strong>{statusLabel}</strong>
         </div>
-        <div className="completion-title" title={item.title}>{item.title}</div>
+        {source !== "night24" && <div className="completion-title" title={item.title}>{item.title}</div>}
         <div className="completion-actors">{item.actorNames || "出演者未設定"}</div>
         <div className="completion-badges">
           {item.isOwned && <span>owned {item.ownedCount}</span>}
@@ -505,11 +528,13 @@ function CompletionCard({ item }: { item: CompletionItem }) {
 
 function ItemDialog({
   item,
+  source,
   onClose,
   onOpenFile,
   onOpenFolder,
 }: {
   item: LibraryItem;
+  source: string;
   onClose: () => void;
   onOpenFile: () => void;
   onOpenFolder: () => void;
@@ -517,9 +542,9 @@ function ItemDialog({
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div className="dialog" onClick={(event) => event.stopPropagation()}>
-        <h2>{item.movieCode}</h2>
+        <h2>{source === "night24" ? item.title : item.movieCode}</h2>
         <p>{item.releaseDate}</p>
-        <p>{item.title}</p>
+        {source !== "night24" && <p>{item.title}</p>}
         <p>{item.actorNames || "出演者未設定"}</p>
         <p className="path">{item.filePath}</p>
         <div className="dialog-stats">
@@ -560,7 +585,13 @@ function Pager({
   );
 }
 
+function compareTitles(a: { title: string; movieCode: string }, b: { title: string; movieCode: string }) {
+  return a.title.localeCompare(b.title, "ja", { numeric: true, sensitivity: "base" }) ||
+    a.movieCode.localeCompare(b.movieCode);
+}
+
 function sortLibraryItems(a: LibraryItem, b: LibraryItem, sortKey: LibrarySortKey) {
+  if (sortKey === "title_asc") return compareTitles(a, b);
   if (sortKey === "release_asc") return a.releaseDate.localeCompare(b.releaseDate);
   if (sortKey === "size_desc") return b.fileSizeBytes - a.fileSizeBytes;
   if (sortKey === "size_asc") return a.fileSizeBytes - b.fileSizeBytes;

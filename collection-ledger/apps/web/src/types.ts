@@ -33,6 +33,7 @@ export type CompletionItem = {
   source: string;
   siteName: string;
   movieCode: string;
+  recognitionId?: string;
   releaseDate: string;
   title: string;
   actorNames: string;
@@ -74,6 +75,7 @@ export type ApiCompletionResponse = {
 };
 
 export type LibrarySortKey =
+  | "title_asc"
   | "release_desc"
   | "release_asc"
   | "size_desc"

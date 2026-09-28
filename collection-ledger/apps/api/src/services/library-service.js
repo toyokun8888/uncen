@@ -85,6 +85,7 @@ function mapCompletionRow(row) {
     linkHrefUrl: String(row.link_href_url || ""),
     dlDetailUrl: String(row.dl_detail_url || ""),
     dlFoundSource: String(row.dl_found_source || ""),
+    ...(source === "night24" ? { recognitionId: String(row.recognition_id || "") } : {}),
   };
 }
 
