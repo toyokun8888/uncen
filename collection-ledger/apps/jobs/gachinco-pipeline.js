@@ -341,16 +341,25 @@ async function withDb(args, callback) {
 }
 
 async function initializeDb(args) {
-  const sql = ["160_gachinco_site.sql", "161_gachinco_recognition_ids.sql"]
-    .map((name) => fs.readFileSync(path.join(ROOT, "ops", "sql", name), "utf8").replace(/^\uFEFF/, ""));
+  const readMigration = (name) => fs.readFileSync(path.join(ROOT, "ops", "sql", name), "utf8").replace(/^\uFEFF/, "");
   if (!args.apply) {
     say("DRY-RUN init-db: additive Gachinco schema migrations are ready; use --apply to execute.");
     return;
   }
   await withDb(args, async (db) => {
+    const existing = await db.query("select to_regclass('cl.gachinco_tm001_master') is not null as initialized, to_regclass('cl.gachinco_tm012_recognition_ids') is not null as recognition_initialized");
+    const names = [
+      ...(!existing.rows[0].initialized ? ["160_gachinco_site.sql"] : []),
+      ...(!existing.rows[0].recognition_initialized ? ["161_gachinco_recognition_ids.sql"] : []),
+      "162_gachinco_owned_actor_names.sql",
+      // The newest source constraint migration is a superset of the prior
+      // heydouga/gallery migrations. Reapplying those in order would narrow an
+      // already upgraded catalog before reaching the newest source list.
+      "165_gachinco_javhoo_source.sql",
+    ];
     await db.query("begin");
     try {
-      for (const statement of sql) await db.query(statement);
+      for (const name of names) await db.query(readMigration(name));
       await db.query("commit");
     } catch (error) {
       await db.query("rollback");
@@ -637,12 +646,69 @@ async function status(args) {
   });
 }
 
+function sameWorkThumbnailCandidates(target, index) {
+  const key = normalizeTitle(target.title);
+  if (key.length < 6 || target.sourceRows.some((row) => row.source !== "neo")) return [];
+  return index.masters.filter((candidate) => {
+    if (candidate.movieCode === target.movieCode || !candidate.thumbnailUrl) return false;
+    const titleKey = normalizeTitle(candidate.title);
+    const offset = titleKey.indexOf(key);
+    if (offset < 0) return false;
+    const suffix = titleKey.slice(offset + key.length);
+    if (/\d$/.test(key) && /^\d/.test(suffix)) return false;
+    if (/part\d|時間スペシャル/.test(suffix)) return false;
+    return true;
+  });
+}
+
+async function reconcileThumbnails(args) {
+  const { index } = loadCatalog(args.inputFile);
+  const exportDir = path.join(ROOT, "storage", "exports", "gachinco");
+  fs.mkdirSync(exportDir, { recursive: true });
+  await withDb(args, async (db) => {
+    const owned = await db.query("select distinct movie_code from cl.gachinco_tm002_owned_files");
+    const ownedCodes = new Set(owned.rows.map((row) => row.movie_code));
+    const assets = await db.query("select movie_code,local_thumbnail_path,thumbnail_status,bytes from cl.gachinco_tm007_thumbnail_assets");
+    const assetByCode = new Map(assets.rows.map((row) => [row.movie_code, row]));
+    const proposals = [];
+    for (const target of index.masters) {
+      if (!ownedCodes.has(target.movieCode) || target.thumbnailUrl) continue;
+      const existing = assetByCode.get(target.movieCode);
+      if (existing?.thumbnail_status === "collected" && existing.local_thumbnail_path) continue;
+      const candidates = sameWorkThumbnailCandidates(target, index);
+      if (candidates.length !== 1) continue;
+      const donor = candidates[0], asset = assetByCode.get(donor.movieCode);
+      if (asset?.thumbnail_status !== "collected" || !asset.local_thumbnail_path ||
+        !safeUnder(asset.local_thumbnail_path, THUMB_DIR) || !fs.existsSync(asset.local_thumbnail_path) ||
+        !imageExtension(fs.readFileSync(asset.local_thumbnail_path))) continue;
+      proposals.push({ movieCode: target.movieCode, title: target.title,
+        donorCode: donor.movieCode, donorTitle: donor.title, donorUrl: donor.thumbnailUrl,
+        localPath: asset.local_thumbnail_path, bytes: Number(asset.bytes || fs.statSync(asset.local_thumbnail_path).size) });
+    }
+    const output = args.outputFile || path.join(exportDir, "gachinco-thumbnail-reconcile-" + new Date().toISOString().replace(/[-:.TZ]/g, "") + ".json");
+    if (!safeUnder(output, exportDir)) throw new Error("thumbnail_reconcile_output_outside_export_dir");
+    fs.writeFileSync(output, JSON.stringify({ applied: args.apply, candidates: proposals }, null, 2) + "\n", "utf8");
+    if (args.apply) {
+      await db.query("begin");
+      try {
+        for (const row of proposals) {
+          await db.query("update cl.gachinco_tm001_master set thumbnail_url=$2,thumbnail_file_path=$3,updated_at=now() where movie_code=$1 and coalesce(thumbnail_file_path,'')=''", [row.movieCode, row.donorUrl, row.localPath]);
+          await db.query("insert into cl.gachinco_tm007_thumbnail_assets (movie_code,thumbnail_url,local_thumbnail_path,local_thumbnail_file_name,thumbnail_status,attempt_count,bytes,last_error,last_checked_at,downloaded_at,updated_at) values ($1,$2,$3,$4,'collected',1,$5,null,now(),now(),now()) on conflict (movie_code) do update set thumbnail_url=excluded.thumbnail_url,local_thumbnail_path=excluded.local_thumbnail_path,local_thumbnail_file_name=excluded.local_thumbnail_file_name,thumbnail_status='collected',bytes=excluded.bytes,last_error=null,last_checked_at=now(),updated_at=now() where cl.gachinco_tm007_thumbnail_assets.thumbnail_status <> 'collected'", [row.movieCode, row.donorUrl, row.localPath, path.basename(row.localPath), row.bytes]);
+        }
+        await db.query("commit");
+      } catch (error) { await db.query("rollback"); throw error; }
+    }
+    say((args.apply ? "APPLY" : "DRY-RUN") + " thumbnail reconciliation=" + proposals.length + " output=" + output);
+  });
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   if (args.step === "crawl") await crawl(args);
   else if (args.step === "init-db") await initializeDb(args);
   else if (args.step === "catalog-sync") await syncCatalog(args);
   else if (args.step === "thumbnails") await collectThumbnails(args);
+  else if (args.step === "thumbnail-reconcile") await reconcileThumbnails(args);
   else if (args.step === "status") await status(args);
   else throw new Error("unknown_step:" + args.step);
 }

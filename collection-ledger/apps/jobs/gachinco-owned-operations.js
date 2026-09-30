@@ -31,7 +31,7 @@ const COLUMNS = [
   "run_id", "status", "classification", "match_method", "confidence", "movie_code", "title",
   "detail_url", "candidate_matches", "source_code", "source_record_id", "source_path", "target_path", "file_name",
   "file_size_bytes", "file_mtime", "drive_letter", "path_marker", "filename_marker", "provider_marker",
-  "move_approved", "register_owned", "note",
+  "move_approved", "register_owned", "review_scope", "actor_names", "note",
 ];
 
 function parseArgs(argv) {
@@ -78,15 +78,92 @@ function targetPath(source, unmatched = false) {
   if (!DRIVES.includes(drive)) throw new Error("drive_not_allowed:" + drive);
   return path.win32.join(drive + ":\\uncen\\gachinco", unmatched ? "unmatched" : "", path.win32.basename(normalized));
 }
+function folderBranchTarget(source, movieCode) {
+  const normalized = normalizePath(source);
+  const folderDigest = crypto.createHash("sha256").update(path.win32.dirname(normalized).toLowerCase(), "utf8").digest("hex").slice(0, 12);
+  return path.win32.join(driveOf(normalized) + ":\\uncen\\gachinco", "branches", movieCode, folderDigest, path.win32.basename(normalized));
+}
 function isGachincoTarget(value) {
   const normalized = normalizePath(value).toLowerCase();
   const drive = driveOf(value);
-  const targetRoot = drive + ":\\uncen\\gachinco";
+  const targetRoot = (drive + ":\\uncen\\gachinco").toLowerCase();
   return DRIVES.includes(drive) && (normalized === targetRoot || normalized.startsWith(targetRoot + "\\"));
+}
+function isGachincoUnmatchedPath(value) {
+  const normalized = normalizePath(value).toLowerCase();
+  const drive = driveOf(value);
+  const unmatchedRoot = (drive + ":\\uncen\\gachinco\\unmatched").toLowerCase();
+  return DRIVES.includes(drive) && normalized.startsWith(unmatchedRoot + "\\");
 }
 function isOtherUncenPath(value) {
   const normalized = normalizePath(value).toLowerCase();
   return /^[a-z]:\\uncen(?:\\|$)/.test(normalized) && !isGachincoTarget(value);
+}
+function attachJavhooEvidence(index, rows) {
+  const byCode = new Map();
+  const byTitle = new Map();
+  for (const row of rows) {
+    const movieCode = String(row.movie_code || "");
+    if (!movieCode || !row.product_title) continue;
+    const evidence = {
+      movieCode,
+      title: String(row.master_title || ""),
+      detailUrl: String(row.detail_url || ""),
+      thumbnailUrl: String(row.thumbnail_url || ""),
+      sourceCode: "javhoo",
+      sourceRecordId: String(row.source_record_id || ""),
+      productTitle: String(row.product_title || ""),
+    };
+    if (evidence.sourceRecordId) byCode.set(evidence.sourceRecordId.toUpperCase(), evidence);
+    const key = normalizeTitle(evidence.productTitle);
+    if (key.length >= 4) {
+      const candidates = byTitle.get(key) || new Map();
+      candidates.set(movieCode, evidence);
+      byTitle.set(key, candidates);
+    }
+  }
+  index.javhooByProductCode = byCode;
+  index.javhooByProductTitle = byTitle;
+}
+function javhooFilenameMatch(source, index) {
+  const fileName = path.win32.basename(normalizePath(source));
+  const token = fileName.match(/(?:^|[^a-z0-9])(?:gachinco[-_. ]+)?((?:gachip|gachig|gachi)[-_. ]*\d+)(?=$|[^a-z0-9])/i)?.[1];
+  const productCode = token?.match(/^(gachip|gachig|gachi)[-_. ]*(\d+)$/i);
+  let evidence = productCode
+    ? index.javhooByProductCode?.get(productCode[1].toUpperCase() + "-" + productCode[2])
+    : null;
+  let method = "javhoo_exact_filename_product_code";
+  if (!evidence) {
+    const normalizedFileName = normalizeTitle(fileName);
+    const titleOccursAtBoundary = (key) => {
+      let offset = 0;
+      while (offset <= normalizedFileName.length - key.length) {
+        const found = normalizedFileName.indexOf(key, offset);
+        if (found < 0) return false;
+        const next = normalizedFileName[found + key.length] || "";
+        if (!(/\d/u.test(key.at(-1)) && /\d/u.test(next))) return true;
+        offset = found + 1;
+      }
+      return false;
+    };
+    const candidates = [];
+    for (const [key, records] of index.javhooByProductTitle || []) {
+      if (titleOccursAtBoundary(key)) candidates.push(...records.values());
+    }
+    const unique = new Map(candidates.map((row) => [row.movieCode, row]));
+    if (unique.size === 1) {
+      evidence = [...unique.values()][0];
+      method = "javhoo_unique_product_title_in_filename";
+    }
+  }
+  if (!evidence) return null;
+  return {
+    inScope: true, status: "catalog_title", matchMethod: method,
+    confidence: method === "javhoo_exact_filename_product_code" ? 0.98 : 0.9,
+    movieCode: evidence.movieCode, title: evidence.title, detailUrl: evidence.detailUrl,
+    thumbnailUrl: evidence.thumbnailUrl, sourceCode: evidence.sourceCode,
+    sourceRecordId: evidence.sourceRecordId, candidateMatches: [], titleEvidence: "video_filename",
+  };
 }
 function hasFc2Marker(value) {
   const normalized = normalizePath(value);
@@ -252,7 +329,109 @@ function exactParentFolderMatch(source, index) {
   }
   return null;
 }
+function reviewedFolderBranchMatch(source, index) {
+  const special = specialCompilationFolderMatch(source, index);
+  if (special) return special;
+  const named = namedWorkFolderMatch(source, index);
+  if (named) return named;
+  const exact = exactParentFolderMatch(source, index);
+  if (exact?.movieCode) return exact;
+  const folder = path.win32.basename(path.win32.dirname(normalizePath(source)));
+  const normalized = normalizeTitle(folder);
+  for (const number of ["4", "7"]) {
+    const editionTitle = "THE KANCHOOOOOO!!!!!! スペシャルエディション " + number;
+    if (normalized !== normalizeTitle(editionTitle)) continue;
+    const primary = index.masters.filter((master) => master.titleSourceCode === "shiitake" && master.normalizedTitle === normalized);
+    if (primary.length !== 1) return exact;
+    const master = primary[0];
+    return { movieCode: master.movieCode, title: master.title, detailUrl: master.detailUrl || "", sourceCode: master.titleSourceCode, sourceRecordId: master.titleSourceRecordId };
+  }
+  return exact;
+}
+function namedWorkFolderMatch(source, index) {
+  const folder = path.win32.basename(path.win32.dirname(normalizePath(source)))
+    .normalize("NFKC").replace(/^\s*\d{1,4}\s*(?=【|\p{L})/u, "")
+    .replace(/^ガチん娘\s+(?=[^！!])/, "").replace(/\s*[-ー]\s*$/, "").trim();
+  const folderKey = normalizeTitle(folder);
+  if (folderKey.length < 8) return null;
+  const reviewedVariant = reviewedCompilationVariant(folderKey, index);
+  if (reviewedVariant) return reviewedVariant;
+  const candidates = index.masters.flatMap((master) => {
+    const title = master.title.normalize("NFKC");
+    const core = title.replace(/^.+?\s+-\s+/, "");
+    const keys = [normalizeTitle(title), normalizeTitle(core)].filter((key) => key.length >= 8);
+    const matchedKeys = keys.filter((key) => {
+      if (folderKey === key) return true;
+      if (!folderKey.startsWith(key) || folderKey.length - key.length > 8) return false;
+      const suffix = folderKey.slice(key.length);
+      // An unlisted Part 2+ is a distinct product, even when its series title
+      // is the same. Part 1 may be published without an explicit suffix.
+      return !/part(?:[2-9]|1\d)|vol\d|特大号/i.test(suffix);
+    });
+    return matchedKeys.length ? [{ master, keyLength: Math.max(...matchedKeys.map((key) => key.length)) }] : [];
+  });
+  if (!candidates.length) return null;
+  const maxLength = Math.max(...candidates.map((candidate) => candidate.keyLength));
+  const best = candidates.filter((candidate) => candidate.keyLength === maxLength).map((candidate) => candidate.master);
+  const primary = best.filter((master) => master.titleSourceCode === "shiitake");
+  const master = best.length === 1 ? best[0] : primary.length === 1 ? primary[0] : null;
+  if (!master) return null;
+  return { movieCode: master.movieCode, title: master.title, detailUrl: master.detailUrl || "",
+    sourceCode: master.titleSourceCode, sourceRecordId: master.titleSourceRecordId,
+    titleEvidence: "reviewed_named_work_folder" };
+}
+function reviewedCompilationVariant(folderKey, index) {
+  let expected = "";
+  if (folderKey === normalizeTitle("マンコレ・リミックス Part2")) expected = normalizeTitle("マンコレ リミックス2");
+  else if (/^オシッコ大図鑑特大号part(?:7|8|9|12)$/.test(folderKey)) expected = folderKey.replace("特大号", "");
+  else if (folderKey === normalizeTitle("ガンシャされる女たち。特大号 Part2")) expected = normalizeTitle("ガンシャされる女たち。Part2");
+  else if (folderKey === normalizeTitle("ごっくんしちゃう女たち。特大号")) expected = normalizeTitle("ごっくんしちゃう女たち。");
+  else if (folderKey.includes(normalizeTitle("露出体験DX")) && folderKey.includes(normalizeTitle("真央ファイナル"))) expected = normalizeTitle("真央ファイナル 露出体験DX");
+  else if (/^露出体験5時間スペシャルpart[23]$/.test(folderKey)) expected = folderKey.replace("スペシャルpart", "スペシャルαpart");
+  else if (folderKey.includes(normalizeTitle("実録ガチ面接226、マジオナ特別編"))) expected = normalizeTitle("実録ガチ面接226、227");
+  else if (folderKey.includes(normalizeTitle("実録ガチ面接238、アナルを捧げる女45"))) expected = normalizeTitle("実録ガチ面接238、アナルを捧げる女45");
+  else if (folderKey.includes(normalizeTitle("エッチな日常127")) && folderKey.includes(normalizeTitle("完全期間限定配信"))) expected = normalizeTitle("実録ガチ面接232、エッチな日常127");
+  if (!expected) return null;
+  const candidates = index.masters.filter((master) => {
+    const full = normalizeTitle(master.title);
+    const core = normalizeTitle(master.title.replace(/^.+?\s+-\s+/, ""));
+    return full === expected || core === expected ||
+      (expected.includes("実録ガチ面接") && full.includes(expected)) ||
+      (master.titleSourceCode === "shiitake" && full.endsWith(expected));
+  });
+  const primary = candidates.filter((master) => master.titleSourceCode === "shiitake");
+  const master = primary.length === 1 ? primary[0] : candidates.length === 1 ? candidates[0] : null;
+  if (!master) return null;
+  return { movieCode: master.movieCode, title: master.title, detailUrl: master.detailUrl || "",
+    sourceCode: master.titleSourceCode, sourceRecordId: master.titleSourceRecordId,
+    titleEvidence: "reviewed_compilation_title_variant" };
+}
+function specialPartNumber(value, folder = false) {
+  const text = String(value || "").normalize("NFKC").replace(/\s+/g, " ").trim();
+  const core = folder ? text : text.replace(/^.+?\s+-\s+/, "");
+  const match = core.match(/^ガチンコ中出し\s*20時間スペシャル(?:\s*Part\s*(10|[1-9]))?$/i);
+  if (!match) return null;
+  return Number(match[1] || 1);
+}
+function specialCompilationFolderMatch(source, index) {
+  const folder = path.win32.basename(path.win32.dirname(normalizePath(source)));
+  const part = specialPartNumber(folder, true);
+  if (part === null) return null;
+  const masters = index.masters.filter((master) => specialPartNumber(master.title) === part);
+  if (masters.length !== 1) return null;
+  const master = masters[0];
+  return { movieCode: master.movieCode, title: master.title, detailUrl: master.detailUrl || "",
+    sourceCode: master.titleSourceCode, sourceRecordId: master.titleSourceRecordId,
+    titleEvidence: "reviewed_special_compilation_folder" };
+}
+function specialActorName(source) {
+  const stem = path.win32.basename(normalizePath(source), path.win32.extname(source));
+  const match = stem.normalize("NFKC").match(/^\s*\d{1,2}\s*([^\d\s].*)$/u);
+  return match ? match[1].trim().replace(/(?<=\p{L})[12]$/u, "") : "";
+}
 function matchFile(source, index) {
+  const javhoo = javhooFilenameMatch(source, index);
+  if (javhoo) return javhoo;
   const match = matchOwnedFile(source, index);
   if (["catalog_title", "bundle_constituent_title", "exact_catalog_id"].includes(match.status)) return { ...match, titleEvidence: "video_filename" };
   // Use an ancestor only when its entire normalized name is one exact catalog
@@ -313,11 +492,12 @@ function rowFor(file, index, runId) {
     provider_marker: isProvider ? "yes" : "no",
     move_approved: moveApproved ? "yes" : "no",
     register_owned: canRegister && filenameTitleEvidence && hasSiteEvidence ? "yes" : "no",
+    review_scope: "",
     note,
   };
 }
 
-function walk(root, handle, errors, state) {
+function walk(root, handle, errors, state, options = {}) {
   const stack = [root];
   while (stack.length) {
     const current = stack.pop();
@@ -328,7 +508,9 @@ function walk(root, handle, errors, state) {
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
       const next = path.win32.join(current, entry.name);
-      if (entry.isDirectory()) { if (!SKIP_DIRS.has(entry.name.toLowerCase())) stack.push(next); }
+      if (entry.isDirectory()) {
+        if (options.skipSystemDirectories === false || !SKIP_DIRS.has(entry.name.toLowerCase())) stack.push(next);
+      }
       else if (entry.isFile() && VIDEO_EXTENSIONS.has(path.win32.extname(entry.name).toLowerCase())) {
         state.videoFiles += 1;
         for (const sample of SAMPLE_ROOTS) if (normalizePath(next).toLowerCase().startsWith(normalizePath(sample).toLowerCase() + "\\")) state.sampleCounts[sample] += 1;
@@ -365,6 +547,181 @@ async function review(args) {
   say("Review CSV: " + output);
 }
 
+async function reviewUnmatched(args) {
+  const index = catalogIndex(args.catalogFile);
+  await withDb(args, async (db) => {
+    const sourceRows = await db.query(`
+      select source.source_record_id, source.movie_code, master.title as master_title,
+             master.detail_url, master.thumbnail_url, source.raw_payload->>'productTitle' as product_title
+      from cl.gachinco_tm003_master_source_records source
+      join cl.gachinco_tm001_master master on master.movie_code=source.movie_code
+      where source.source_code='javhoo'
+        and source.raw_payload->>'mappingStatus'='unique_title_match'
+    `);
+    attachJavhooEvidence(index, sourceRows.rows);
+    say("Loaded " + sourceRows.rowCount + " uniquely linked Javhoo title/code records from DB.");
+  });
+  const runId = makeId();
+  const output = path.resolve(args.outputFile || path.join(EXPORT_DIR, "gachinco-unmatched-rescan-" + runId + ".csv"));
+  if (!inside(output, EXPORT_DIR)) throw new Error("review_output_outside_gachinco_export_dir");
+  const state = { directories: 0, videoFiles: 0, candidates: [], unmatchedRoots: {} };
+  const errors = [];
+  for (const drive of DRIVES) {
+    const root = path.win32.join(drive + ":\\", "uncen", "gachinco", "unmatched");
+    if (!fs.existsSync(root)) {
+      state.unmatchedRoots[root] = "missing";
+      continue;
+    }
+    state.unmatchedRoots[root] = "scanned";
+    say("Scanning unmatched " + root);
+    walk(root, (file) => {
+      const row = rowFor(file, index, runId);
+      if (!row) return null;
+      if (row.match_method?.startsWith("javhoo_")) {
+        const markers = markerState(row.source_path);
+        const protectedPath = isOtherUncenPath(row.source_path) || hasFc2Marker(row.source_path);
+        row.move_approved = !protectedPath && markers.pathMarker ? "yes" : row.move_approved;
+        row.register_owned = !protectedPath && markers.pathMarker ? "yes" : row.register_owned;
+      }
+      // Existing unmatched contents may carry a marker only in their folder.
+      // A rescan may promote uniquely title-matched videos; every other row
+      // stays visible for review and cannot be approved for another move.
+      row.review_scope = "unmatched_rescan";
+      if (!(row.register_owned === "yes" && row.move_approved === "yes" && ["exact_catalog_id", "catalog_title", "bundle_constituent_title"].includes(row.classification))) {
+        row.move_approved = "no";
+        row.register_owned = "no";
+      }
+      return row;
+    }, errors, state, { skipSystemDirectories: false });
+  }
+  writeCsv(output, state.candidates, COLUMNS);
+  fs.mkdirSync(EXPORT_DIR, { recursive: true });
+  const counts = state.candidates.reduce((result, row) => { result[row.classification] = (result[row.classification] || 0) + 1; return result; }, {});
+  const eligible = state.candidates.filter((row) => row.register_owned === "yes").length;
+  fs.writeFileSync(path.join(EXPORT_DIR, "gachinco-unmatched-rescan-" + runId + "-scan.json"), JSON.stringify({
+    runId, reviewScope: "unmatched_rescan", includedDrives: DRIVES, excludedDrives: ["S"], unmatchedRoots: state.unmatchedRoots,
+    directories: state.directories, videoFiles: state.videoFiles, candidates: state.candidates.length, uniquelyMatched: eligible, counts, scanErrors: errors,
+  }, null, 2) + "\n", "utf8");
+  say("Scanned " + state.videoFiles + " videos in existing unmatched directories; unique matched rows=" + eligible + "; scan errors=" + errors.length);
+  say("Counts: " + JSON.stringify(counts));
+  say("Review CSV: " + output);
+}
+
+async function reviewFolderBranches(args) {
+  const input = path.resolve(args.inputFile || "");
+  if (!args.inputFile || !inside(input, EXPORT_DIR) || path.extname(input).toLowerCase() !== ".csv") throw new Error("folder_review_requires_gachinco_csv");
+  const index = catalogIndex(args.catalogFile);
+  const original = readCsv(fs.readFileSync(input, "utf8"));
+  const runId = makeId();
+  const output = path.resolve(args.outputFile || path.join(EXPORT_DIR, "gachinco-folder-branch-review-" + runId + ".csv"));
+  if (!inside(output, EXPORT_DIR)) throw new Error("review_output_outside_gachinco_export_dir");
+  const candidates = [];
+  const skipped = [];
+  for (const row of original) {
+    const special = specialCompilationFolderMatch(row.source_path, index);
+    const named = !special && namedWorkFolderMatch(row.source_path, index);
+    if (!["parent_folder_exact_title", "bundle_constituent_parent_folder_exact_title"].includes(row.match_method) &&
+      !((special || named) && row.classification === "not_gachinco")) continue;
+    const source = normalizePath(row.source_path);
+    const parent = reviewedFolderBranchMatch(source, index);
+    if (!parent || !parent.movieCode || (!(special || named) && parent.movieCode !== row.movie_code)) {
+      skipped.push({ sourcePath: source, reason: "exact_parent_folder_catalog_mapping_changed" });
+      continue;
+    }
+    if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
+      skipped.push({ sourcePath: source, reason: "source_missing" });
+      continue;
+    }
+    const stat = fs.statSync(source);
+    candidates.push({
+      ...row,
+      run_id: runId,
+      status: "manual_confirmed",
+      classification: "manual_confirmed",
+      match_method: special ? "reviewed_compilation_folder_branch" : named ? "reviewed_named_folder_branch" : "reviewed_exact_folder_branch",
+      confidence: 0.95,
+      movie_code: parent.movieCode,
+      title: parent.title,
+      detail_url: parent.detailUrl,
+      source_code: parent.sourceCode,
+      source_record_id: parent.sourceRecordId,
+      source_path: source,
+      target_path: (special || named) ? folderBranchTarget(source, parent.movieCode) : targetPath(source, false),
+      file_size_bytes: stat.size,
+      file_mtime: stat.mtime.toISOString(),
+      move_approved: "yes",
+      register_owned: "yes",
+      review_scope: "folder_branch_recovery",
+      actor_names: special ? specialActorName(source) : "",
+      note: "User-reviewed folder bundle: each video in this exact catalog-title folder is a separate owned branch.",
+    });
+  }
+  const flatTargetCounts = new Map();
+  for (const row of candidates) {
+    const key = row.target_path.toLowerCase();
+    flatTargetCounts.set(key, (flatTargetCounts.get(key) || 0) + 1);
+  }
+  for (const row of candidates) {
+    if (flatTargetCounts.get(row.target_path.toLowerCase()) > 1 || fs.existsSync(row.target_path)) {
+      row.target_path = folderBranchTarget(row.source_path, row.movie_code);
+      row.note += " Original file name is preserved under a work branch folder to avoid a same-drive collision.";
+    }
+  }
+  writeCsv(output, candidates, COLUMNS);
+  fs.writeFileSync(output.replace(/\.csv$/i, "-scan.json"), JSON.stringify({ runId, input, candidates: candidates.length, skipped, branchSubfolderTargets: candidates.filter((row) => row.target_path.toLowerCase() !== targetPath(row.source_path, false).toLowerCase()).length }, null, 2) + "\n", "utf8");
+  say("Exact folder branches=" + candidates.length + "; skipped=" + skipped.length);
+  say("Review CSV: " + output);
+}
+
+async function reviewCollisionBranches(args) {
+  const input = path.resolve(args.inputFile || "");
+  if (!args.inputFile || !inside(input, EXPORT_DIR) || path.extname(input).toLowerCase() !== ".csv") throw new Error("collision_review_requires_gachinco_csv");
+  const index = catalogIndex(args.catalogFile);
+  const original = readCsv(fs.readFileSync(input, "utf8"));
+  const runId = makeId();
+  const output = path.resolve(args.outputFile || path.join(EXPORT_DIR, "gachinco-collision-branch-review-" + runId + ".csv"));
+  if (!inside(output, EXPORT_DIR)) throw new Error("review_output_outside_gachinco_export_dir");
+  const candidates = [], skipped = [];
+  for (const row of original.filter((item) => item.status === "same_drive_target_name_collision")) {
+    const source = normalizePath(row.source_path);
+    if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
+      skipped.push({ sourcePath: source, reason: "source_missing" });
+      continue;
+    }
+    const match = matchFile(source, index);
+    if (!["catalog_title", "bundle_constituent_title", "exact_catalog_id"].includes(match.status) || !match.movieCode || match.titleEvidence !== "video_filename") {
+      skipped.push({ sourcePath: source, reason: "no_unique_video_title" });
+      continue;
+    }
+    const stat = fs.statSync(source);
+    candidates.push({
+      ...row,
+      run_id: runId,
+      status: match.status,
+      classification: match.status,
+      match_method: match.matchMethod,
+      confidence: match.confidence,
+      movie_code: match.movieCode,
+      title: match.title,
+      detail_url: match.detailUrl || "",
+      source_code: match.sourceCode,
+      source_record_id: match.sourceRecordId,
+      source_path: source,
+      target_path: folderBranchTarget(source, match.movieCode),
+      file_size_bytes: stat.size,
+      file_mtime: stat.mtime.toISOString(),
+      move_approved: "yes",
+      register_owned: "yes",
+      review_scope: "collision_branch_recovery",
+      note: "Unique video title in an original collision group; preserve the name and original folder identity under the owned branch directory.",
+    });
+  }
+  writeCsv(output, candidates, COLUMNS);
+  fs.writeFileSync(output.replace(/\.csv$/i, "-scan.json"), JSON.stringify({ runId, input, candidates: candidates.length, skipped }, null, 2) + "\n", "utf8");
+  say("Collision branches=" + candidates.length + "; skipped=" + skipped.length);
+  say("Review CSV: " + output);
+}
+
 function stableFile(file, row) {
   try {
     const stat = fs.statSync(file);
@@ -379,15 +736,27 @@ async function apply(args) {
   if (!inside(input, EXPORT_DIR) || path.extname(input).toLowerCase() !== ".csv") throw new Error("input_must_be_gachinco_review_csv");
   const rows = readCsv(fs.readFileSync(input, "utf8"));
   if (!rows.length) throw new Error("review_csv_empty");
-  const output = path.join(EXPORT_DIR, path.basename(input, ".csv") + ".apply-results.csv");
-  const journalPath = output + ".move-journal.jsonl";
+  const unmatchedRescanApply = args.step === "owned-unmatched-apply";
+  const folderBranchApply = args.step === "owned-folder-apply";
+  const collisionBranchApply = args.step === "owned-collision-apply";
+  if (unmatchedRescanApply && rows.some((row) => row.review_scope !== "unmatched_rescan")) throw new Error("unmatched_apply_requires_unmatched_rescan_csv");
+  if (folderBranchApply && rows.some((row) => row.review_scope !== "folder_branch_recovery")) throw new Error("folder_apply_requires_folder_branch_csv");
+  if (collisionBranchApply && rows.some((row) => row.review_scope !== "collision_branch_recovery")) throw new Error("collision_apply_requires_collision_branch_csv");
+  const applyOutput = path.join(EXPORT_DIR, path.basename(input, ".csv") + ".apply-results.csv");
+  const output = args.apply ? applyOutput : path.join(EXPORT_DIR, path.basename(input, ".csv") + ".dry-run.csv");
+  const journalPath = applyOutput + ".move-journal.jsonl";
   const journal = readJsonLines(journalPath);
   const prior = fs.existsSync(output) ? readCsv(fs.readFileSync(output, "utf8")) : [];
   const recovered = new Set(prior.filter((row) => ["moved_pending_db", "registered", "unmatched_registered"].includes(row.status))
     .map((row) => normalizePath(row.source_path).toLowerCase() + "=>" + normalizePath(row.target_path).toLowerCase()));
   const durableIntents = new Set(journal.filter((row) => row.event === "move_intent").map((row) => normalizePath(row.source_path).toLowerCase() + "=>" + normalizePath(row.target_path).toLowerCase()));
   const runId = rows[0].run_id || makeId();
-  const approved = rows.filter((row) => String(row.move_approved).toLowerCase() === "yes" || String(row.register_owned).toLowerCase() === "yes");
+  const approved = rows.filter((row) => {
+    if (unmatchedRescanApply && (row.review_scope !== "unmatched_rescan" || row.register_owned !== "yes" || !["exact_catalog_id", "catalog_title", "bundle_constituent_title"].includes(row.classification))) return false;
+    if (folderBranchApply && (row.review_scope !== "folder_branch_recovery" || row.register_owned !== "yes" || row.classification !== "manual_confirmed")) return false;
+    if (collisionBranchApply && (row.review_scope !== "collision_branch_recovery" || row.register_owned !== "yes" || !["catalog_title", "bundle_constituent_title", "exact_catalog_id"].includes(row.classification))) return false;
+    return String(row.move_approved).toLowerCase() === "yes" || String(row.register_owned).toLowerCase() === "yes";
+  });
   if (!approved.length) throw new Error("no_preapproved_rows");
   const targetSourceGroups = new Map();
   for (const row of approved) {
@@ -400,28 +769,49 @@ async function apply(args) {
   const index = catalogIndex(args.catalogFile);
   const outcomes = [];
   await withDb(args, async (db) => {
+    const javhooRows = await db.query(`
+      select source.source_record_id, source.movie_code, master.title as master_title,
+             master.detail_url, master.thumbnail_url, source.raw_payload->>'productTitle' as product_title
+      from cl.gachinco_tm003_master_source_records source
+      join cl.gachinco_tm001_master master on master.movie_code=source.movie_code
+      where source.source_code='javhoo'
+        and source.raw_payload->>'mappingStatus'='unique_title_match'
+    `);
+    attachJavhooEvidence(index, javhooRows.rows);
     const relations = await discoverRegistryRelations(db);
     const registered = await fetchRegisteredPaths(db, relations);
     for (const row of approved) {
       const source = normalizePath(row.source_path);
-      const destination = targetPath(source, String(row.register_owned).toLowerCase() !== "yes");
+      const folderScope = folderBranchApply || row.review_scope === "folder_branch_recovery";
+      const collisionScope = collisionBranchApply || row.review_scope === "collision_branch_recovery";
+      const branchScope = folderScope || collisionScope;
       const requested = normalizePath(row.target_path);
+      const flatDestination = targetPath(source, String(row.register_owned).toLowerCase() !== "yes");
+      const branchDestination = branchScope ? folderBranchTarget(source, row.movie_code) : "";
+      const destination = branchScope && requested.toLowerCase() === branchDestination.toLowerCase() ? branchDestination : flatDestination;
       const registerOwned = String(row.register_owned).toLowerCase() === "yes";
       const markers = markerState(source);
       const actualMatch = matchFile(source, index);
       let status = "planned", note = "";
       if (!allowedDrive(source)) { status = "blocked_path_or_drive"; note = "Only D/E/F/G/H/I/J/K/L/N/P/Q/R/T are allowed; S is excluded."; }
+      else if (folderScope && (row.classification !== "manual_confirmed" || reviewedFolderBranchMatch(source, index)?.movieCode !== row.movie_code)) { status = "folder_branch_evidence_changed"; note = "Source must remain in a reviewed folder whose catalog title maps to this work."; }
+      else if (collisionScope && (actualMatch.movieCode !== row.movie_code || actualMatch.titleEvidence !== "video_filename")) { status = "collision_branch_evidence_changed"; note = "The video title must still uniquely map to this work."; }
+      else if ((unmatchedRescanApply || row.review_scope === "unmatched_rescan") && !isGachincoUnmatchedPath(source)) { status = "blocked_unmatched_rescan_path"; note = "A rescan source must remain under its same-drive Gachinco unmatched directory until apply."; }
       else if (!VIDEO_EXTENSIONS.has(path.win32.extname(source).toLowerCase())) { status = "blocked_extension"; note = "Unsupported video extension."; }
       else if (isProtectedByPath(source)) { status = "protected_existing_site_path"; note = "FC2 and existing uncen collection paths are protected."; }
       else if (registered.has(source.toLowerCase())) { status = "already_registered_protected"; note = "Path is registered in an existing owned-file relation; no move or update is allowed."; }
       else if (registered.has(destination.toLowerCase())) { status = "registered_destination_protected"; note = "Destination path is already registered in an owned-file relation."; }
       else if (collidedTargets.has(destination.toLowerCase())) { status = "same_drive_target_name_collision"; note = "Multiple distinct source videos share this flat same-drive target name; preserve every source and do not rename or overwrite."; }
       else if (requested.toLowerCase() !== destination.toLowerCase()) { status = "blocked_target_mismatch"; note = "Target must preserve the original file name under same-drive uncen/gachinco."; }
+      else if (registerOwned && row.match_method?.startsWith("javhoo_") &&
+        (actualMatch.sourceCode !== row.source_code || actualMatch.sourceRecordId !== row.source_record_id)) {
+        status = "javhoo_source_crosswalk_changed"; note = "The exact Javhoo source product code no longer resolves to the reviewed source record.";
+      }
       else if (registerOwned && row.classification !== "manual_confirmed" && (!actualMatch.inScope || !actualMatch.movieCode || actualMatch.movieCode !== row.movie_code)) { status = "catalog_match_changed"; note = "The current catalog no longer verifies this CSV work mapping."; }
       else if (!registerOwned && !actualMatch.inScope && !markers.filenameMarker && !markers.providerMarker) { status = "site_marker_missing"; note = "The current video filename no longer contains an explicit Gachinco marker."; }
       else if (registerOwned && !validMovieCode(row.movie_code)) { status = "blocked_missing_movie_code"; note = "A valid Gachinco master movie_code is required."; }
       else if (registerOwned && !["catalog_title", "bundle_constituent_title", "exact_catalog_id", "manual_confirmed"].includes(row.classification)) { status = "blocked_match_class"; note = "Only a unique catalog title, explicit bundle constituent, or reviewed CSV mapping can be registered."; }
-      else if (registerOwned && !markers.filenameMarker && !markers.pathMarker && !markers.providerMarker) { status = "site_marker_missing"; note = "Title-only candidates without a Gachinco filename or path marker stay at the original path."; }
+      else if (registerOwned && !branchScope && !markers.filenameMarker && !markers.pathMarker && !markers.providerMarker) { status = "site_marker_missing"; note = "Title-only candidates without a Gachinco filename or path marker stay at the original path."; }
       else if (registerOwned && row.classification !== "manual_confirmed" && actualMatch.titleEvidence === "exact_parent_folder_title") { status = "parent_folder_title_needs_review"; note = "A parent-folder title alone cannot establish that this video is part of the work."; }
       else if (!registerOwned && !markers.filenameMarker && !markers.providerMarker) { status = "filename_marker_missing"; note = "Only explicit video-filename markers may be moved to unmatched."; }
       else if (registerOwned && String(row.move_approved).toLowerCase() !== "yes") { status = "blocked_unapproved_owned_move"; note = "The CSV must approve a mapped Gachinco-marked file before moving/registering."; }
@@ -443,7 +833,7 @@ async function apply(args) {
             const newlyRegistered = await findRegisteredPath(db, relations, [source, destination]);
             if (newlyRegistered.length) throw new Error("registered_path_protection_recheck:" + newlyRegistered.join(" | "));
             if (isProtectedByPath(source)) throw new Error("protected_path_recheck");
-            if (registerOwned && (!markers.filenameMarker && !markers.pathMarker && !markers.providerMarker || (row.classification !== "manual_confirmed" && (actualMatch.titleEvidence === "exact_parent_folder_title" || actualMatch.movieCode !== row.movie_code)))) throw new Error("catalog_or_site_evidence_changed_before_move");
+            if (registerOwned && ((!branchScope && !markers.filenameMarker && !markers.pathMarker && !markers.providerMarker) || (row.classification !== "manual_confirmed" && (actualMatch.titleEvidence === "exact_parent_folder_title" || actualMatch.movieCode !== row.movie_code)) || (folderScope && reviewedFolderBranchMatch(source, index)?.movieCode !== row.movie_code) || (collisionScope && (actualMatch.movieCode !== row.movie_code || actualMatch.titleEvidence !== "video_filename")))) throw new Error("catalog_or_site_evidence_changed_before_move");
             if (!registerOwned && !markers.filenameMarker && !markers.providerMarker) throw new Error("filename_marker_missing_before_unmatched_move");
             if (fs.existsSync(destination)) throw new Error("destination_collision_before_move");
             if (!stableFile(source, row)) throw new Error("source_changed_before_move");
@@ -474,8 +864,8 @@ async function apply(args) {
           const master = await db.query("select movie_code from cl.gachinco_tm001_master where movie_code=$1", [row.movie_code]);
           if (master.rowCount !== 1) throw new Error("movie_code_missing_from_master:" + row.movie_code);
           const owned = await db.query(
-            "insert into cl.gachinco_tm002_owned_files (movie_code,file_path,original_file_path,file_name,file_ext,drive_letter,file_size_bytes,file_mtime,source_type,match_method,match_score,original_file_name,last_seen_at,note,updated_at) values ($1,$2,$3,$4,$5,$6,$7,$8,'normal',$9,$10,$4,now(),'gachinco manual ownership registration',now()) on conflict (file_path) do nothing returning owned_file_id",
-            [row.movie_code, destination, source, path.win32.basename(destination), path.win32.extname(destination).slice(1).toLowerCase(), driveOf(destination), stat.size, stat.mtime.toISOString(), row.classification === "manual_confirmed" ? "manual_user_match" : row.match_method, Number(row.confidence)]
+            "insert into cl.gachinco_tm002_owned_files (movie_code,file_path,original_file_path,file_name,file_ext,drive_letter,file_size_bytes,file_mtime,source_type,match_method,match_score,original_file_name,actor_names,last_seen_at,note,updated_at) values ($1,$2,$3,$4,$5,$6,$7,$8,'normal',$9,$10,$4,$11,now(),'gachinco manual ownership registration',now()) on conflict (file_path) do nothing returning owned_file_id",
+            [row.movie_code, destination, source, path.win32.basename(destination), path.win32.extname(destination).slice(1).toLowerCase(), driveOf(destination), stat.size, stat.mtime.toISOString(), row.classification === "manual_confirmed" ? "manual_user_match" : row.match_method, Number(row.confidence), row.actor_names || ""]
           );
           if (owned.rowCount !== 1) throw new Error("owned_file_path_conflict:" + destination);
           await db.query(
@@ -507,7 +897,13 @@ async function apply(args) {
 async function main() {
   const args = parseArgs(process.argv);
   if (args.step === "owned-review") await review(args);
+  else if (args.step === "owned-unmatched-review") await reviewUnmatched(args);
+  else if (args.step === "owned-folder-review") await reviewFolderBranches(args);
+  else if (args.step === "owned-collision-review") await reviewCollisionBranches(args);
   else if (args.step === "owned-apply") await apply(args);
+  else if (args.step === "owned-unmatched-apply") await apply(args);
+  else if (args.step === "owned-folder-apply") await apply(args);
+  else if (args.step === "owned-collision-apply") await apply(args);
   else throw new Error("unsupported_step:" + args.step);
 }
 main().catch((error) => { process.stderr.write(String(error.stack || error) + "\n"); process.exitCode = 1; });

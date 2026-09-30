@@ -46,6 +46,11 @@ const SOURCE_CONFIGS = {
     metadataTable: "cl.tokyo_hot_owned_file_video_metadata",
     initSqlPaths: ["140_tokyo_hot_site.sql"],
   },
+  gachinco: {
+    ownedTable: "cl.gachinco_tm002_owned_files",
+    metadataTable: "cl.gachinco_tm011_owned_file_video_metadata",
+    initSqlPaths: [],
+  },
 };
 
 function parseArgs(argv) {

@@ -3,8 +3,8 @@
 const crypto = require("node:crypto");
 const path = require("node:path");
 
-const SOURCES = new Set(["shiitake", "a_up", "neo"]);
-const SOURCE_PRIORITY = { shiitake: 0, a_up: 1, neo: 2 };
+const SOURCES = new Set(["shiitake", "a_up", "neo", "heydouga", "gallery"]);
+const SOURCE_PRIORITY = { shiitake: 0, a_up: 1, neo: 2, heydouga: 3, gallery: 4 };
 
 function normalizeTitle(value) {
   return String(value || "")
@@ -24,8 +24,9 @@ function normalizeRow(row, index) {
   const inputCandidates = Array.isArray(rawPayload.constituentCandidates)
     ? rawPayload.constituentCandidates
     : row.constituentCandidates;
+  const derivedCandidates = extractGachincoBundleCandidates(title, source, row.detailUrl, row.thumbnailUrl, sourceRecordId);
   const constituentCandidates = Array.isArray(inputCandidates)
-    ? inputCandidates.map((candidate) => {
+    ? [...inputCandidates, ...derivedCandidates].map((candidate) => {
       const candidateTitle = String(candidate.title || "").replace(/\s+/g, " ").trim();
       return {
         title: candidateTitle,
@@ -35,8 +36,9 @@ function normalizeRow(row, index) {
         detailUrl: String(row.detailUrl || ""),
         thumbnailUrl: String(row.thumbnailUrl || ""),
       };
-    }).filter((candidate) => candidate.title && candidate.normalizedTitle)
-    : [];
+    }).filter((candidate, candidateIndex, candidates) => candidate.title && candidate.normalizedTitle &&
+      candidates.findIndex((item) => item.normalizedTitle === candidate.normalizedTitle) === candidateIndex)
+    : derivedCandidates;
   const reviewedTitleAliases = [];
   for (const match of title.matchAll(/実録\s*ガチ面接\s*([0-9０-９]+)/gu)) {
     const number = match[1];
@@ -45,6 +47,42 @@ function normalizeRow(row, index) {
     if (normalizedAlias && !reviewedTitleAliases.some((alias) => alias.normalizedTitle === normalizedAlias)) {
       reviewedTitleAliases.push({ title: aliasTitle, normalizedTitle: normalizedAlias, aliasKind: "reviewed_prefix_variant" });
     }
+  }
+  // A-up wraps some Gachinco episode titles in a long series/streaming prefix,
+  // while owned filenames retain only the numbered episode title. Index that
+  // distinctive numbered title separately. If multiple masters use the same
+  // episode number, the catalog index keeps the alias ambiguous and won't pick
+  // one arbitrarily.
+  for (const match of title.matchAll(/今日のガチん娘ちゃん[。．.]?\s*([0-9０-９]+)(前編|後編)?/gu)) {
+    const qualifier = match[2] || "";
+    const aliasTitle = "今日のガチん娘ちゃん。" + match[1] + qualifier;
+    const normalizedAlias = normalizeTitle(aliasTitle);
+    if (normalizedAlias && !reviewedTitleAliases.some((alias) => alias.normalizedTitle === normalizedAlias)) {
+      reviewedTitleAliases.push({ title: aliasTitle, normalizedTitle: normalizedAlias,
+        aliasKind: qualifier ? "reviewed_episode_qualified" : "reviewed_episode_number" });
+    }
+  }
+  for (const match of title.matchAll(/ガチンコロードムービー\s*[〜～~\-]*\s*ME[・･.]?\s*GU/giu)) {
+    const aliasTitle = "ガチンコロードムービー MEGU";
+    const normalizedAlias = normalizeTitle(aliasTitle);
+    if (normalizedAlias && !reviewedTitleAliases.some((alias) => alias.normalizedTitle === normalizedAlias)) {
+      reviewedTitleAliases.push({ title: aliasTitle, normalizedTitle: normalizedAlias, aliasKind: "reviewed_title_core" });
+    }
+  }
+  if (source === "a_up") {
+    for (const match of title.matchAll(/THE\s+KANCHOOOOOO!+\s*スペシャルエディション\s*([0-9０-９]+)/giu)) {
+      const aliasTitle = "THE KANCHOOOOOO!!!!!! スペシャルエディション " + match[1];
+      const normalizedAlias = normalizeTitle(aliasTitle);
+      if (!reviewedTitleAliases.some((alias) => alias.normalizedTitle === normalizedAlias)) {
+        reviewedTitleAliases.push({ title: aliasTitle, normalizedTitle: normalizedAlias, aliasKind: "reviewed_title_core" });
+      }
+    }
+  }
+  if (normalizeTitle(title) === normalizeTitle("アナルを捧げる女 20 美奈子28歳")) {
+    reviewedTitleAliases.push({ title: "アナルを捧げる女 20 美奈子", normalizedTitle: normalizeTitle("アナルを捧げる女 20 美奈子"), aliasKind: "reviewed_title_core" });
+  }
+  if (normalizeTitle(title) === normalizeTitle("せきらら女優 9")) {
+    reviewedTitleAliases.push({ title: "せきらら女優 09", normalizedTitle: normalizeTitle("せきらら女優 09"), aliasKind: "reviewed_zero_padded_number" });
   }
   return {
     ...row,
@@ -207,6 +245,9 @@ function buildCatalogIndex(inputRows) {
 
   const movieCodesByNormalizedTitle = new Map();
   const bundleAliasIndex = new Map();
+  const episodeQualifierPatterns = [];
+  const separatedPartTitleKeys = new Set();
+  const reviewedPartSuffixKeys = new Set();
   const pushCode = (key, master) => {
     if (!key) return;
     const codes = movieCodesByNormalizedTitle.get(key) || new Set();
@@ -214,7 +255,13 @@ function buildCatalogIndex(inputRows) {
     movieCodesByNormalizedTitle.set(key, codes);
   };
   for (const master of masters) {
-    for (const alias of master.titleAliases) pushCode(alias.normalizedTitle, master);
+    for (const alias of master.titleAliases) {
+      pushCode(alias.normalizedTitle, master);
+      if (/\d$/u.test(alias.normalizedTitle)) {
+        separatedPartTitleKeys.add(alias.normalizedTitle);
+      }
+      if (alias.aliasKind === "reviewed_title_core") reviewedPartSuffixKeys.add(alias.normalizedTitle);
+    }
     for (const alias of master.bundleAliases) {
       pushCode(alias.normalizedTitle, master);
       const matches = bundleAliasIndex.get(alias.normalizedTitle) || [];
@@ -223,6 +270,21 @@ function buildCatalogIndex(inputRows) {
       }
       bundleAliasIndex.set(alias.normalizedTitle, matches);
     }
+    for (const alias of master.titleAliases.filter((item) => item.aliasKind === "reviewed_episode_qualified")) {
+      const match = alias.title.match(/^今日のガチん娘ちゃん[。．.]?\s*([0-9０-９]+)(前編|後編)$/u);
+      if (match) episodeQualifierPatterns.push({
+        baseKey: normalizeTitle("今日のガチん娘ちゃん。" + match[1]),
+        qualifier: normalizeTitle(match[2]),
+        codes: [master.movieCode],
+      });
+    }
+  }
+  const groupedEpisodeQualifierPatterns = new Map();
+  for (const pattern of episodeQualifierPatterns) {
+    const key = pattern.baseKey + ":" + pattern.qualifier;
+    const group = groupedEpisodeQualifierPatterns.get(key) || { ...pattern, codes: [] };
+    group.codes.push(...pattern.codes);
+    groupedEpisodeQualifierPatterns.set(key, group);
   }
   masters.sort(compareMaster);
   return {
@@ -235,19 +297,23 @@ function buildCatalogIndex(inputRows) {
     mastersByExactTitle,
     movieCodesByNormalizedTitle,
     bundleAliasIndex,
-    titleMatcher: createTitleMatcher(movieCodesByNormalizedTitle),
+    titleMatcher: createTitleMatcher(movieCodesByNormalizedTitle,
+      [...groupedEpisodeQualifierPatterns.values()].map((pattern) => ({
+        ...pattern, codes: [...new Set(pattern.codes)],
+      })), separatedPartTitleKeys, reviewedPartSuffixKeys),
   };
 }
 
-function createTitleMatcher(movieCodesByNormalizedTitle) {
+function createTitleMatcher(movieCodesByNormalizedTitle, episodeQualifierPatterns = [], separatedPartTitleKeys = new Set(), reviewedPartSuffixKeys = new Set()) {
   const patterns = [];
   for (const [key, codes] of movieCodesByNormalizedTitle) {
     if (key.length < 4) continue;
-    patterns.push({ key, codes: [...codes] });
+    patterns.push({ key, codes: [...codes], allowSeparatedPartSuffix: separatedPartTitleKeys.has(key), allowPartDigitSuffix: reviewedPartSuffixKeys.has(key) });
   }
   patterns.sort((a, b) => b.key.length - a.key.length || a.key.localeCompare(b.key));
   return function matchTitles(value) {
-    const text = normalizeTitle(value);
+    const normalized = normalizeWithBoundaries(value);
+    const text = normalized.text;
     const found = [];
     for (const pattern of patterns) {
       let from = 0;
@@ -255,10 +321,39 @@ function createTitleMatcher(movieCodesByNormalizedTitle) {
         const start = text.indexOf(pattern.key, from);
         if (start < 0) break;
         const end = start + pattern.key.length;
-        // A numbered work must not also match an unnumbered series title, and
-        // work 26 must not match work 266.
-        if (!/\d/.test(text[end] || "")) {
+        const numericSuffix = pattern.key.match(/\d+$/u)?.[0] || "";
+        const numericStart = end - numericSuffix.length;
+        const hasSplitNumber = numericSuffix.length > 1 &&
+          [...normalized.separatorOffsets].some((offset) => offset > numericStart && offset < end);
+        const partNumber = text[end] || "";
+        const separatedPart = pattern.allowSeparatedPartSuffix && normalized.separatorOffsets.has(end) &&
+          /^[1-9]$/u.test(partNumber) &&
+          (!text[end + 1] || (!/\d/u.test(text[end + 1]) && normalized.separatorOffsets.has(end + 1)));
+        // A numbered work must not match a longer number. A separator inside
+        // a Neo title's numeric ending marks a distinct one-digit file part
+        // (89 + " 1"), never the concatenated title number 891.
+        if (!hasSplitNumber && (!/\d/.test(text[end] || "") || separatedPart || (!numericSuffix && pattern.allowPartDigitSuffix))) {
           found.push({ ...pattern, start, end });
+        }
+        from = start + 1;
+      }
+    }
+    // A filename can place the performer between the numbered episode and its
+    // 前編/後編 marker. Require the exact numbered episode, then the known
+    // qualifier within a short gap so episode 4 cannot collapse into 4後編.
+    for (const pattern of episodeQualifierPatterns) {
+      let from = 0;
+      while (from <= text.length - pattern.baseKey.length) {
+        const start = text.indexOf(pattern.baseKey, from);
+        if (start < 0) break;
+        const baseEnd = start + pattern.baseKey.length;
+        if (!/\d/.test(text[baseEnd] || "")) {
+          const gap = text.slice(baseEnd, baseEnd + 9);
+          const qualifierAt = gap.indexOf(pattern.qualifier);
+          if (qualifierAt >= 0) {
+            const end = baseEnd + qualifierAt + pattern.qualifier.length;
+            found.push({ key: pattern.baseKey + pattern.qualifier, codes: pattern.codes, start, end });
+          }
         }
         from = start + 1;
       }
@@ -274,32 +369,54 @@ function createTitleMatcher(movieCodesByNormalizedTitle) {
   };
 }
 
+function normalizeWithBoundaries(value) {
+  let text = "";
+  let pendingSeparator = false;
+  const separatorOffsets = new Set();
+  // A circled episode number is a complete token even when the file's part
+  // number follows without a space (for example, edition ⑤ part 1).
+  const withCircledBoundaries = String(value || "").replace(/[①-⑳]/gu, (character) => character + " ");
+  for (const character of withCircledBoundaries.normalize("NFKC").toLowerCase()) {
+    if (/[\p{L}\p{N}]/u.test(character)) {
+      if (pendingSeparator && text) separatorOffsets.add(text.length);
+      text += character;
+      pendingSeparator = false;
+    } else if (text) {
+      pendingSeparator = true;
+    }
+  }
+  if (pendingSeparator && text) separatorOffsets.add(text.length);
+  return { text, separatorOffsets };
+}
+
 function extractGachincoBundleCandidates(title, source, detailUrl, thumbnailUrl, sourceRecordId) {
   if (source !== "a_up") return [];
   const found = new Map();
   // Only the user-reviewed series pattern is decomposed. General punctuation/comma
   // splitting could incorrectly turn actors, subtitles, or unrelated works into aliases.
-  for (const match of String(title || "").matchAll(/実録\s*ガチ面接\s*[0-9０-９]+/gu)) {
-    const aliasTitle = match[0].replace(/\s+/g, " ").trim();
-    const normalized = normalizeTitle(aliasTitle);
-    if (normalized) found.set(normalized, {
-      title: aliasTitle,
-      normalizedTitle: normalized,
-      aliasKind: "bundle_constituent",
-      sourceRecordId: String(sourceRecordId || ""),
-      detailUrl: String(detailUrl || ""),
-      thumbnailUrl: String(thumbnailUrl || ""),
-    });
-    const shortAlias = aliasTitle.replace(/^実録\s*/u, "");
-    const shortNormalized = normalizeTitle(shortAlias);
-    if (shortNormalized) found.set(shortNormalized, {
-      title: shortAlias,
-      normalizedTitle: shortNormalized,
-      aliasKind: "reviewed_prefix_variant",
-      sourceRecordId: String(sourceRecordId || ""),
-      detailUrl: String(detailUrl || ""),
-      thumbnailUrl: String(thumbnailUrl || ""),
-    });
+  for (const match of String(title || "").matchAll(/実録\s*ガチ面接\s*[0-9０-９]+(?:\s*[、,]\s*[0-9０-９]+)*/gu)) {
+    for (const number of match[0].match(/[0-9０-９]+/gu) || []) {
+      const aliasTitle = "実録ガチ面接" + number;
+      const normalized = normalizeTitle(aliasTitle);
+      if (normalized) found.set(normalized, {
+        title: aliasTitle,
+        normalizedTitle: normalized,
+        aliasKind: "bundle_constituent",
+        sourceRecordId: String(sourceRecordId || ""),
+        detailUrl: String(detailUrl || ""),
+        thumbnailUrl: String(thumbnailUrl || ""),
+      });
+      const shortAlias = "ガチ面接" + number;
+      const shortNormalized = normalizeTitle(shortAlias);
+      if (shortNormalized) found.set(shortNormalized, {
+        title: shortAlias,
+        normalizedTitle: shortNormalized,
+        aliasKind: "reviewed_prefix_variant",
+        sourceRecordId: String(sourceRecordId || ""),
+        detailUrl: String(detailUrl || ""),
+        thumbnailUrl: String(thumbnailUrl || ""),
+      });
+    }
   }
   return [...found.values()];
 }
@@ -320,6 +437,22 @@ function matchOwnedFile(filePath, index, contextTexts = []) {
       const master = primary[0];
       return {
         inScope: true, status: "catalog_title", matchMethod: "explicit_user_title_equivalence",
+        confidence: 0.95, pathMarker, filenameMarker, providerMarker,
+        movieCode: master.movieCode, title: master.title,
+        sourceCode: master.titleSourceCode, sourceRecordId: master.titleSourceRecordId,
+        detailUrl: master.detailUrl || "", thumbnailUrl: master.thumbnailUrl || "",
+      };
+    }
+  }
+  const edition = fileName.match(/THE\s+KANCHOOOOOO!*[\s._-]*スペシャルエディション[\s._-]*([④⑦])(?:[1-9])?/iu);
+  if (edition) {
+    const number = edition[1] === "④" ? "4" : "7";
+    const primary = index.masters.filter((master) => master.titleSourceCode === "shiitake" &&
+      master.normalizedTitle === normalizeTitle("THE KANCHOOOOOO!!!!!! スペシャルエディション " + number));
+    if (primary.length === 1) {
+      const master = primary[0];
+      return {
+        inScope: true, status: "catalog_title", matchMethod: "reviewed_primary_edition_branch",
         confidence: 0.95, pathMarker, filenameMarker, providerMarker,
         movieCode: master.movieCode, title: master.title,
         sourceCode: master.titleSourceCode, sourceRecordId: master.titleSourceRecordId,
